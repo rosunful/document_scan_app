@@ -19,7 +19,7 @@ class AppTheme {
         buttonColor: Color(0xFF129D7C),
         longRectangleColor: Color(0xFFECF6F5),
         septemberColor: Color(0xFF0D5F4D),
-        //   static const lightBorder = Color(0xFFE3EBE8);  //border
+        borderColor: Color(0xFFE3EBE8)  //border
       ),
     ],
   );
@@ -29,9 +29,9 @@ class AppTheme {
     brightness: Brightness.dark,
     scaffoldBackgroundColor: const Color(0xFF0A0F14),
     fontFamily: 'Inter',
-    extensions: [
+    extensions: const [
       CustomAppColors(
-        backgroundColor: const Color(0xFF0A0F14),
+        backgroundColor:  Color(0xFF0A0F14),
         searchbarColor: Color(0xFF151B24),
         headingTextColor: Color(0xFFFFFEFF),
         suheadingTextColor: Color(0xFFBDDFFF),
@@ -41,6 +41,7 @@ class AppTheme {
         buttonColor: Color(0xFF29E0A2),
         longRectangleColor: Color(0xFF121A23),
         septemberColor: Color(0xFFE4EBF9),
+        borderColor : Color(0xFF273541),   // border
       )
     ]
   );
@@ -57,6 +58,7 @@ class CustomAppColors extends ThemeExtension<CustomAppColors> {
   final Color buttonColor;
   final Color longRectangleColor;
   final Color septemberColor;
+  final Color borderColor;
 
   const CustomAppColors({
     required this.backgroundColor,
@@ -69,7 +71,8 @@ class CustomAppColors extends ThemeExtension<CustomAppColors> {
     required this.buttonColor,
     required this.longRectangleColor,
     required this.septemberColor,
-    //   static const darkBorder = Color(0xFF273541);      // border
+    required this.borderColor,
+   
   });
 
   @override
@@ -84,6 +87,7 @@ class CustomAppColors extends ThemeExtension<CustomAppColors> {
     Color? buttonColor,
     Color? longRectangleColor,
     Color? septemberColor,
+    Color? borderColor,
   }) {
     return CustomAppColors(
       backgroundColor: backgroundColor ?? this.backgroundColor,
@@ -96,6 +100,7 @@ class CustomAppColors extends ThemeExtension<CustomAppColors> {
       buttonColor: buttonColor ?? this.buttonColor,
       longRectangleColor: longRectangleColor ?? this.longRectangleColor,
       septemberColor: septemberColor ?? this.septemberColor,
+      borderColor: borderColor ?? this.borderColor,
     );
   }
 
@@ -109,7 +114,7 @@ class CustomAppColors extends ThemeExtension<CustomAppColors> {
 }
 
 extension CustomAppColorsX on BuildContext {
-  CustomAppColors get myAppColors => Theme.of(this).extension()!;
+  CustomAppColors get myAppColors => Theme.of(this).extension<CustomAppColors>()!;
 }
 
 

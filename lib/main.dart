@@ -1,17 +1,24 @@
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
 import 'package:scan_documnet_app/theme/app_theme.dart';
 import 'package:scan_documnet_app/widgets/home.dart';
 
-void main(){
-  runApp(Home());
+import 'widgets/custom_bottom_nav.dart';
+
+void main() {
+  runApp(
+    MultiProvider(
+      providers: [ChangeNotifierProvider(create: (_) => BottomNavProvider())],
+      child: RootApp(),
+    ),
+  );
 }
 
-
-class Home extends StatelessWidget{
-  const Home({super.key});
+class RootApp extends StatelessWidget {
+  const RootApp({super.key});
 
   @override
-  Widget build (BuildContext context){
+  Widget build(BuildContext context) {
     return MaterialApp(
       title: 'I Scan',
       debugShowCheckedModeBanner: false,
@@ -22,4 +29,3 @@ class Home extends StatelessWidget{
     );
   }
 }
-
