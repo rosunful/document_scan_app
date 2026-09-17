@@ -45,7 +45,7 @@ app.*.map.json
 /android/app/release
 
 # Temporary ignores (Corrected paths)
-lib/controller/
-lib/model/
-lib/widgets/toolcard.dart
-lib/widgets/topbar.dart
+# lib/controller/
+# lib/model/
+# lib/widgets/toolcard.dart
+# lib/widgets/topbar.dart

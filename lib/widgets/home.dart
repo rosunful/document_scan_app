@@ -20,38 +20,31 @@ class MyApp extends StatelessWidget {
     final vm = context.watch<BottomNavProvider>();
     final colors = context.myAppColors;
 
-    return SafeArea(
-      child: Scaffold(
-        body:IndexedStack(
-          index: vm.selectedIndex,
-          children: _pages,
-        ) ,
-        bottomNavigationBar: const CustomBottomNav(),
-        floatingActionButton: Container(
-          height: 60,
-          width: 60,
-          decoration: BoxDecoration(
-            shape: BoxShape.circle,
-            color: colors.bottomnaveColor,
-            border: Border.all(
-              style: BorderStyle.solid,
-              width: 1.5,
-              color: const Color(0xFFE3EBE8),
-            ),
-          ),
-          child: IconButton(
-            onPressed: () {
-              //do something here
-            },
-            icon: Icon(
-              Icons.camera_alt_rounded,
-              color: colors.buttonColor,
-              size: 28,
-            ),
+    return Scaffold(
+      body:IndexedStack(
+        index: vm.selectedIndex,
+        children: _pages,
+      ) ,
+      bottomNavigationBar: const CustomBottomNav(),
+      floatingActionButton: Container(
+        height: 60,
+        width: 60,
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          color: colors.buttonColor,
+        ),
+        child: IconButton(
+          onPressed: () {
+            //do something here
+          },
+          icon: Icon(
+            Icons.camera_alt_rounded,
+            color: colors.backgroundColor,
+            size: 28,
           ),
         ),
-        floatingActionButtonLocation: FloatingActionButtonLocation.centerDocked,
       ),
+      floatingActionButtonLocation: FloatingActionButtonLocation.centerDocked,
     );
   }
 }

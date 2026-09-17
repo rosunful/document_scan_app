@@ -27,12 +27,17 @@ class CustomBottomNav extends StatelessWidget {
       child: Container(
         height: 70,
         decoration: BoxDecoration(
-          color: colors.bottomnaveColor,
-          border: const Border(
-            top: BorderSide(color: Color(0xFFE3EBE8), width: 1),
+          color: colors.searchbarColor,
+          border: Border(
+            top: BorderSide(
+              color: colors.headingTextColor.withValues(alpha: 0.5),
+              style: BorderStyle.solid,
+              width: 0.2,
+            ),
           ),
         ),
         child: Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
             Expanded(
               child: _navitem(
@@ -43,6 +48,7 @@ class CustomBottomNav extends StatelessWidget {
                 label: 'home',
               ),
             ),
+            SizedBox(width: 40,),
             Expanded(
               child: _navitem(
                 context,
@@ -77,7 +83,13 @@ Widget _navitem(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
             Icon(icon, size: 26, color: isActive ? Colors.red : Colors.blue),
-            Text(label, style: TextStyle(fontSize: 10, color: isActive ? Colors.red : Colors.blue)),
+            Text(
+              label,
+              style: TextStyle(
+                fontSize: 10,
+                color: isActive ? Colors.red : Colors.blue,
+              ),
+            ),
           ],
         ),
       ),
