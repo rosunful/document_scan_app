@@ -1,10 +1,12 @@
 import 'package:flutter/material.dart';
-import '../controller/mock_data.dart';
+import 'package:provider/provider.dart';
 import '../model/document_model.dart';
+import '../repository/document_repository.dart';
 import '../theme/app_theme.dart';
 import '../widgets/document_pages_widgets/month_section.dart';
 import '../widgets/document_pages_widgets/month_chips.dart';
 import '../widgets/topbar_section.dart';
+import 'saved_document_viewer_screen.dart';
 
 class DocumentScreen extends StatefulWidget {
   const DocumentScreen({super.key});
@@ -17,23 +19,50 @@ class _DocumentScreenState extends State<DocumentScreen> {
   String _selectedFilter = 'All';
 
   void _onDocumentTap(DocumentItem doc) {
-    // TODO: open the document viewer.
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Open ${doc.name}')),
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => SavedDocumentViewerScreen(title: doc.name, pagePaths: doc.pagePaths),
+      ),
     );
   }
 
   void _onDocumentMoreTap(DocumentItem doc) {
-    // TODO: show a real actions bottom sheet (rename, share, delete...).
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('More options for ${doc.name}')),
+    final repository = context.read<DocumentRepository>();
+    showModalBottomSheet(
+      context: context,
+      builder: (sheetContext) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.delete_outline_rounded),
+              title: const Text('Delete'),
+              onTap: () async {
+                Navigator.pop(sheetContext);
+                await repository.delete(doc.id);
+              },
+            ),
+          ],
+        ),
+      ),
     );
   }
 
   @override
   Widget build(BuildContext context) {
     final colors = context.myAppColors;
-    final groups = MockData.groupsForFilter(_selectedFilter);
+    final repository = context.watch<DocumentRepository>();
+
+    if (!repository.isLoaded) {
+      return Scaffold(
+        backgroundColor: colors.backgroundColor,
+        body: const Center(child: CircularProgressIndicator()),
+      );
+    }
+
+    final filters = repository.monthFilters;
+    if (!filters.contains(_selectedFilter)) _selectedFilter = 'All';
+    final groups = repository.monthGroups(_selectedFilter);
 
     return Scaffold(
       backgroundColor: colors.backgroundColor,
@@ -52,11 +81,7 @@ class _DocumentScreenState extends State<DocumentScreen> {
                 children: [
                   Text(
                     'All Documents',
-                    style: TextStyle(
-                      fontSize: 21,
-                      fontWeight: FontWeight.w800,
-                      color: colors.headingTextColor,
-                    ),
+                    style: TextStyle(fontSize: 21, fontWeight: FontWeight.w800, color: colors.headingTextColor),
                   ),
                   const SizedBox(height: 6),
                   Text(
@@ -72,10 +97,10 @@ class _DocumentScreenState extends State<DocumentScreen> {
               child: ListView.separated(
                 scrollDirection: Axis.horizontal,
                 padding: const EdgeInsets.symmetric(horizontal: 16),
-                itemCount: MockData.monthFilters.length,
+                itemCount: filters.length,
                 separatorBuilder: (_, __) => const SizedBox(width: 8),
                 itemBuilder: (context, index) {
-                  final label = MockData.monthFilters[index];
+                  final label = filters[index];
                   return MonthFilterChip(
                     label: label,
                     selected: _selectedFilter == label,
@@ -86,19 +111,26 @@ class _DocumentScreenState extends State<DocumentScreen> {
             ),
             const SizedBox(height: 16),
             Expanded(
-              child: ListView.separated(
-                padding: const EdgeInsets.fromLTRB(16, 0, 16, 24),
-                itemCount: groups.length,
-                separatorBuilder: (_, __) => const SizedBox(height: 16),
-                itemBuilder: (context, index) {
-                  final group = groups[index];
-                  return MonthSection(
-                    group: group,
-                    onTapDocument: _onDocumentTap,
-                    onMoreTapDocument: _onDocumentMoreTap,
-                  );
-                },
-              ),
+              child: groups.isEmpty
+                  ? Center(
+                      child: Text(
+                        'No scanned documents yet',
+                        style: TextStyle(color: colors.descriptionColor),
+                      ),
+                    )
+                  : ListView.separated(
+                      padding: const EdgeInsets.fromLTRB(16, 0, 16, 24),
+                      itemCount: groups.length,
+                      separatorBuilder: (_, __) => const SizedBox(height: 16),
+                      itemBuilder: (context, index) {
+                        final group = groups[index];
+                        return MonthSection(
+                          group: group,
+                          onTapDocument: _onDocumentTap,
+                          onMoreTapDocument: _onDocumentMoreTap,
+                        );
+                      },
+                    ),
             ),
           ],
         ),

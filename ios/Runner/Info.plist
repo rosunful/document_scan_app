@@ -2,6 +2,12 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<key>NSCameraUsageDescription</key>
+	<string>I Scan needs camera access to scan your documents.</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>Save your scanned documents to your photo library</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>I Scan needs photo library access to import documents.</string>
 	<key>CADisableMinimumFrameDurationOnPhone</key>
 	<true/>
 	<key>CFBundleDevelopmentRegion</key>

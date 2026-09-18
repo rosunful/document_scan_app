@@ -4,14 +4,23 @@ import 'package:scan_documnet_app/provider/theme_provider.dart';
 import 'package:scan_documnet_app/theme/app_theme.dart';
 import 'package:scan_documnet_app/widgets/home.dart';
 
+import 'repository/document_repository.dart';
 import 'widgets/custom_bottom_nav.dart';
 
-void main() {
+void main() async {
+
+  WidgetsFlutterBinding.ensureInitialized();
+  final documentRepository = DocumentRepository();
+  await documentRepository.load();
+
   runApp(
     MultiProvider(
       providers: [
         ChangeNotifierProvider(create: (_) => BottomNavProvider()),
-        ChangeNotifierProvider(create: (_) => ThemeProvider())],
+        ChangeNotifierProvider(create: (_) => ThemeProvider()),
+        ChangeNotifierProvider.value(value: documentRepository),
+        ],
+        
       child: RootApp(),
     ),
   );
