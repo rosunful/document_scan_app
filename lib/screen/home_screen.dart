@@ -6,26 +6,40 @@ import '../widgets/custom_bottom_nav.dart';
 import '../widgets/home_page_widgets/card.dart';
 import '../widgets/topbar_section.dart';
 import 'camera_scan_preview_screen.dart';
+import 'excel_viewer_screen.dart';
 import 'image_to_pdf_preview_screen.dart';
+import 'pdf_to_image_screen.dart';
+import 'text_extraction_screen.dart';
 
 class HomeScreen extends StatelessWidget {
   const HomeScreen({super.key});
 
-  Future<void> _onToolTap(BuildContext context, String title) async {
-    switch (title) {
-      case 'Image to PDF':
-        await _startImageToPdf(context);
-        break;
-      case 'Scan Document':
-        // Existing scan flow — leave as-is / wire to your CustomCameraScreen
-        // -> ScanPreviewScreen path the same way MyApp's FAB does.
-        break;
-      default:
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('$title tapped')),
-        );
-    }
+ Future<void> _onToolTap(BuildContext context, String title) async {
+  switch (title) {
+    case 'Image to PDF':
+      await _startImageToPdf(context);
+      break;
+    case 'Scan Document':
+      Navigator.of(context).push(
+        MaterialPageRoute(builder: (_) => const TextExtractionScreen()),
+      );
+      break;
+    case 'PDF to Image': // <- confirm exact title
+      Navigator.of(context).push(
+        MaterialPageRoute(builder: (_) => const PdfToImageScreen()),
+      );
+      break;
+    case 'Open in Excel': // <- confirm exact title
+      Navigator.of(context).push(
+        MaterialPageRoute(builder: (_) => const ExcelViewerScreen()),
+      );
+      break;
+    default:
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('$title tapped')),
+      );
   }
+}
 
   /// Camera opens first; the user can capture pages there, or tap the
   /// gallery icon inside the preview screen if they'd rather pick existing
@@ -72,7 +86,11 @@ class HomeScreen extends StatelessWidget {
             const SizedBox(height: 6),
             Text(
               'Quick tools to manage your documents and extract text from images',
-              style: TextStyle(fontSize: 13.5, color: colors.descriptionColor, height: 1.35),
+              style: TextStyle(
+                fontSize: 13.5,
+                color: colors.descriptionColor,
+                height: 1.35,
+              ),
             ),
             const SizedBox(height: 20),
             GridView.count(
@@ -83,10 +101,12 @@ class HomeScreen extends StatelessWidget {
               crossAxisSpacing: 12,
               childAspectRatio: 1.35,
               children: MockData.tools
-                  .map((tool) => ToolCard(
-                        tool: tool,
-                        onTap: () => _onToolTap(context, tool.title),
-                      ))
+                  .map(
+                    (tool) => ToolCard(
+                      tool: tool,
+                      onTap: () => _onToolTap(context, tool.title),
+                    ),
+                  )
                   .toList(),
             ),
             const SizedBox(height: 24),
@@ -113,7 +133,11 @@ class HomeScreen extends StatelessWidget {
                           color: colors.buttonColor,
                         ),
                       ),
-                      Icon(Icons.chevron_right_rounded, size: 18, color: colors.buttonColor),
+                      Icon(
+                        Icons.chevron_right_rounded,
+                        size: 18,
+                        color: colors.buttonColor,
+                      ),
                     ],
                   ),
                 ),

@@ -10,6 +10,7 @@ import file_selector_macos
 import gal
 import pdfx
 import printing
+import share_plus
 
 func RegisterGeneratedPlugins(registry: FlutterPluginRegistry) {
   FilePickerPlugin.register(with: registry.registrar(forPlugin: "FilePickerPlugin"))
@@ -17,4 +18,5 @@ func RegisterGeneratedPlugins(registry: FlutterPluginRegistry) {
   GalPlugin.register(with: registry.registrar(forPlugin: "GalPlugin"))
   PdfxPlugin.register(with: registry.registrar(forPlugin: "PdfxPlugin"))
   PrintingPlugin.register(with: registry.registrar(forPlugin: "PrintingPlugin"))
+  SharePlusMacosPlugin.register(with: registry.registrar(forPlugin: "SharePlusMacosPlugin"))
 }

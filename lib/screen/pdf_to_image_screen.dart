@@ -1,5 +1,4 @@
 import 'dart:io';
-
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:gal/gal.dart';
@@ -23,11 +22,11 @@ class _PdfToImageScreenState extends State<PdfToImageScreen> {
   bool _saving = false;
 
   Future<void> _pickAndRender() async {
-    final result = await FilePicker.platform.pickFiles(
+    final result = await FilePicker.pickFiles(
       type: FileType.custom,
       allowedExtensions: ['pdf'],
     );
-    final path = result?.files.single.path;
+    final path = result.isEmpty ? null : result.single.path;
     if (path == null || !mounted) return;
 
     setState(() => _state = _State.rendering);
