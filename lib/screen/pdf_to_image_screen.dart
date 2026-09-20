@@ -7,7 +7,11 @@ import '../services/pdf_to_image_service.dart';
 import '../theme/app_theme.dart';
 
 class PdfToImageScreen extends StatefulWidget {
-  const PdfToImageScreen({super.key});
+  const PdfToImageScreen({super.key, this.initialPages});
+
+  /// Pages already rendered by the caller (e.g. the Home screen), so this
+  /// screen can open straight to the grid instead of picking a file.
+  final List<String>? initialPages;
 
   @override
   State<PdfToImageScreen> createState() => _PdfToImageScreenState();
@@ -21,13 +25,31 @@ class _PdfToImageScreenState extends State<PdfToImageScreen> {
   String _errorMessage = '';
   bool _saving = false;
 
+  @override
+  void initState() {
+    super.initState();
+    final pages = widget.initialPages;
+    if (pages != null) {
+      _pages = pages;
+      _state = _State.done;
+    } else {
+      _pickAndRender();
+    }
+  }
+
   Future<void> _pickAndRender() async {
     final result = await FilePicker.pickFiles(
       type: FileType.custom,
       allowedExtensions: ['pdf'],
     );
     final path = result.isEmpty ? null : result.single.path;
-    if (path == null || !mounted) return;
+    if (path == null) {
+      // Cancelled the picker. On first entry there is nothing to fall back
+      // to, so leave the screen.
+      if (mounted && _state == _State.pickFile) Navigator.of(context).pop();
+      return;
+    }
+    if (!mounted) return;
 
     setState(() => _state = _State.rendering);
     try {
@@ -106,41 +128,11 @@ class _PdfToImageScreenState extends State<PdfToImageScreen> {
         ],
       ),
       body: switch (_state) {
-        _State.pickFile => _buildPicker(colors),
-        _State.rendering => Center(child: CircularProgressIndicator(color: colors.buttonColor)),
+        _State.pickFile || _State.rendering =>
+          Center(child: CircularProgressIndicator(color: colors.buttonColor)),
         _State.error => _buildError(colors),
         _State.done => _buildGrid(colors),
       },
-    );
-  }
-
-  Widget _buildPicker(CustomAppColors colors) {
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(24),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(Icons.picture_as_pdf_outlined, size: 56, color: colors.descriptionColor),
-            const SizedBox(height: 16),
-            Text(
-              'Choose a PDF to convert to images',
-              style: TextStyle(color: colors.headingTextColor, fontSize: 15),
-              textAlign: TextAlign.center,
-            ),
-            const SizedBox(height: 20),
-            ElevatedButton(
-              style: ElevatedButton.styleFrom(
-                backgroundColor: colors.buttonColor,
-                foregroundColor: Colors.white,
-                padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
-              ),
-              onPressed: _pickAndRender,
-              child: const Text('Choose PDF'),
-            ),
-          ],
-        ),
-      ),
     );
   }
 
@@ -157,7 +149,7 @@ class _PdfToImageScreenState extends State<PdfToImageScreen> {
             const SizedBox(height: 20),
             ElevatedButton(
               style: ElevatedButton.styleFrom(backgroundColor: colors.buttonColor, foregroundColor: Colors.white),
-              onPressed: () => setState(() => _state = _State.pickFile),
+              onPressed: _pickAndRender,
               child: const Text('Try Again'),
             ),
           ],

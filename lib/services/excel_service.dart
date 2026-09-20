@@ -80,7 +80,7 @@ ParsedWorkbook _parseEntry(ExcelParseRequest request) {
 
     final rows = <List<String>>[];
     for (final row in table.rows) {
-      rows.add(row.map((cell) => _cellToString(cell)).toList());
+      rows.add(row.map((cell) => _cellToString(cell)).toList(growable: true));
     }
     if (rows.any((r) => r.any((c) => c.isNotEmpty))) {
       sheets.add(ParsedSheet(name: name, rows: rows));

@@ -6,7 +6,12 @@ import '../services/excel_service.dart';
 import '../theme/app_theme.dart';
 
 class ExcelViewerScreen extends StatefulWidget {
-  const ExcelViewerScreen({super.key});
+  const ExcelViewerScreen({super.key, this.initialSheets, this.initialFileName});
+
+  /// Sheets already parsed by the caller (e.g. the Home screen), so this
+  /// screen can open straight to the workbook instead of picking a file.
+  final List<ParsedSheet>? initialSheets;
+  final String? initialFileName;
 
   @override
   State<ExcelViewerScreen> createState() => _ExcelViewerScreenState();
@@ -31,13 +36,32 @@ class _ExcelViewerScreenState extends State<ExcelViewerScreen> {
   bool _saving = false;
   _UndoSnapshot? _undo;
 
+  @override
+  void initState() {
+    super.initState();
+    final sheets = widget.initialSheets;
+    if (sheets != null) {
+      _sheets = sheets;
+      _fileName = widget.initialFileName;
+      _state = _State.done;
+    } else {
+      _pickAndParse();
+    }
+  }
+
   Future<void> _pickAndParse() async {
     final result = await FilePicker.pickFiles(
       type: FileType.custom,
       allowedExtensions: ['xlsx', 'xls', 'csv'],
     );
     final path = result.isEmpty ? null : result.single.path;
-    if (path == null || !mounted) return;
+    if (path == null) {
+      // Cancelled the picker. On first entry there is nothing to fall back
+      // to, so leave the screen; if we're already viewing a file, stay put.
+      if (mounted && _state == _State.pickFile) Navigator.of(context).pop();
+      return;
+    }
+    if (!mounted) return;
 
     setState(() {
       _state = _State.loading;
@@ -101,7 +125,7 @@ class _ExcelViewerScreenState extends State<ExcelViewerScreen> {
   void _addRow() {
     _snapshotForUndo();
     setState(() {
-      _sheet.rows.add(List.filled(_sheet.columnCount, ''));
+      _sheet.rows.add(List.filled(_sheet.columnCount, '', growable: true));
       _dirty = true;
     });
   }
@@ -213,8 +237,8 @@ Future<void> _saveAs() async {
           ],
         ),
         body: switch (_state) {
-          _State.pickFile => _buildPicker(colors),
-          _State.loading => Center(child: CircularProgressIndicator(color: colors.buttonColor)),
+          _State.pickFile || _State.loading =>
+            Center(child: CircularProgressIndicator(color: colors.buttonColor)),
           _State.error => _buildError(colors),
           _State.done => _buildWorkbook(colors),
         },
@@ -245,36 +269,6 @@ Future<void> _saveAs() async {
     );
   }
 
-  Widget _buildPicker(CustomAppColors colors) {
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(24),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(Icons.grid_on_rounded, size: 56, color: colors.descriptionColor),
-            const SizedBox(height: 16),
-            Text(
-              'Choose an Excel or CSV file to view and edit',
-              style: TextStyle(color: colors.headingTextColor, fontSize: 15),
-              textAlign: TextAlign.center,
-            ),
-            const SizedBox(height: 20),
-            ElevatedButton(
-              style: ElevatedButton.styleFrom(
-                backgroundColor: colors.buttonColor,
-                foregroundColor: Colors.white,
-                padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
-              ),
-              onPressed: _pickAndParse,
-              child: const Text('Choose File'),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
   Widget _buildError(CustomAppColors colors) {
     return Center(
       child: Padding(
@@ -288,7 +282,7 @@ Future<void> _saveAs() async {
             const SizedBox(height: 20),
             ElevatedButton(
               style: ElevatedButton.styleFrom(backgroundColor: colors.buttonColor, foregroundColor: Colors.white),
-              onPressed: () => setState(() => _state = _State.pickFile),
+              onPressed: _pickAndParse,
               child: const Text('Try Again'),
             ),
           ],

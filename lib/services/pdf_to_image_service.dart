@@ -1,5 +1,4 @@
 import 'dart:io';
-import 'dart:typed_data';
 
 import 'package:path_provider/path_provider.dart';
 import 'package:pdfx/pdfx.dart';
@@ -33,7 +32,7 @@ class PdfToImageService {
           final file = File(
             '${outDir.path}${Platform.pathSeparator}page_${i.toString().padLeft(3, '0')}.jpg',
           );
-          await file.writeAsBytes(rendered as Uint8List);
+          await file.writeAsBytes(rendered.bytes);
           paths.add(file.path);
         } finally {
           await page.close();
