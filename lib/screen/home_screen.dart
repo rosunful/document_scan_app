@@ -1,17 +1,18 @@
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
 import '../controller/mock_data.dart';
 import '../services/excel_service.dart';
+import '../services/ml_kit_scan_service.dart';
 import '../services/pdf_to_image_service.dart';
 import '../theme/app_theme.dart';
-import '../widgets/custom_bottom_nav.dart';
 import '../widgets/home_page_widgets/card.dart';
 import '../widgets/topbar_section.dart';
 import 'camera_scan_preview_screen.dart';
 import 'excel_viewer_screen.dart';
 import 'image_to_pdf_preview_screen.dart';
 import 'pdf_to_image_screen.dart';
+import 'preview_screnn.dart';
+import 'profile_screen.dart';
 import 'text_extraction_screen.dart';
 
 class HomeScreen extends StatefulWidget {
@@ -29,6 +30,9 @@ class _HomeScreenState extends State<HomeScreen> {
     switch (title) {
       case 'Image to PDF':
         await _startImageToPdf(context);
+        break;
+      case 'Auto Scan':
+        await _startAutoScan(context);
         break;
       case 'Scan Document':
         Navigator.of(context).push(
@@ -141,6 +145,30 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
+  /// Google ML Kit scanner: one full-screen flow that auto-detects, crops and
+  /// de-skews every page itself, then hands the results to the same preview
+  /// screen the custom camera uses. Falls back to the custom camera when ML
+  /// Kit isn't available (no Google Play Services / non-Android).
+  Future<void> _startAutoScan(BuildContext context) async {
+    try {
+      final images = await MlKitScanService.scanImages();
+      if (images == null || images.isEmpty || !context.mounted) return;
+      await Navigator.of(context).push(
+        MaterialPageRoute(
+          builder: (_) => ScanPreviewScreen(imagePaths: images),
+        ),
+      );
+    } catch (_) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Auto Scan isn\'t supported on this device — opening the camera instead.'),
+        ),
+      );
+      await _startImageToPdf(context);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final colors = context.myAppColors;
@@ -154,31 +182,36 @@ class _HomeScreenState extends State<HomeScreen> {
             ListView(
               padding: const EdgeInsets.fromLTRB(16, 12, 16, 32),
               children: [
-                AppTopBar(onSearchChanged: (_) {}),
-                const SizedBox(height: 22),
-                Text(
-                  'Good morning,',
-                  style: TextStyle(fontSize: 14.5, color: colors.descriptionColor),
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  'Scan, convert, get things done',
-                  style: TextStyle(
-                    fontSize: 21,
-                    fontWeight: FontWeight.w800,
-                    color: colors.headingTextColor,
+                AppTopBar(
+                  onAvatarTap: () => Navigator.of(context).push(
+                    MaterialPageRoute(builder: (_) => const ProfileScreen()),
                   ),
+                  onSearchChanged: (_) {},
                 ),
-                const SizedBox(height: 6),
-                Text(
-                  'Quick tools to manage your documents and extract text from images',
-                  style: TextStyle(
-                    fontSize: 13.5,
-                    color: colors.descriptionColor,
-                    height: 1.35,
-                  ),
-                ),
-                const SizedBox(height: 20),
+                const SizedBox(height: 24),
+                // Text(
+                //   'Good morning,',
+                //   style: TextStyle(fontSize: 14.5, color: colors.descriptionColor),
+                // ),
+                // const SizedBox(height: 4),
+                // Text(
+                //   'Tools',
+                //   style: TextStyle(
+                //     fontSize: 21,
+                //     fontWeight: FontWeight.w800,
+                //     color: colors.headingTextColor,
+                //   ),
+                // ),
+                // const SizedBox(height: 6),
+                // Text(
+                //   'Tools',
+                //   style: TextStyle(
+                //     fontSize: 13.5,
+                //     color: colors.descriptionColor,
+                //     height: 1.35,
+                //   ),
+                // ),
+                // const SizedBox(height: 14),
                 GridView.count(
                   crossAxisCount: 2,
                   shrinkWrap: true,
@@ -196,39 +229,41 @@ class _HomeScreenState extends State<HomeScreen> {
                       .toList(),
                 ),
                 const SizedBox(height: 24),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    Text(
-                      'Recent Documents',
-                      style: TextStyle(
-                        fontSize: 16.5,
-                        fontWeight: FontWeight.w700,
-                        color: colors.headingTextColor,
-                      ),
-                    ),
-                    GestureDetector(
-                      onTap: () => context.read<BottomNavProvider>().setIndex(1),
-                      child: Row(
-                        children: [
-                          Text(
-                            'See all',
-                            style: TextStyle(
-                              fontSize: 13.5,
-                              fontWeight: FontWeight.w600,
-                              color: colors.buttonColor,
-                            ),
-                          ),
-                          Icon(
-                            Icons.chevron_right_rounded,
-                            size: 18,
-                            color: colors.buttonColor,
-                          ),
-                        ],
-                      ),
-                    ),
-                  ],
-                ),
+                // Row(
+                //   mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                //   children: [
+                //     Text(
+                //       'Recent Documents',
+                //       style: TextStyle(
+                //         fontSize: 16.5,
+                //         fontWeight: FontWeight.w700,
+                //         color: colors.headingTextColor,
+                //       ),
+                //     ),
+                //     GestureDetector(
+                //       onTap: () => context.read<BottomNavProvider>().setIndex(1),
+                //       child: Row(
+                //         children: [
+                //           Text(
+                //             'See all',
+                //             style: TextStyle(
+                //               fontSize: 13.5,
+                //               fontWeight: FontWeight.w600,
+                //               color: colors.buttonColor,
+                //             ),
+                //           ),
+                //           Icon(
+                //             Icons.chevron_right_rounded,
+                //             size: 18,
+                //             color: colors.buttonColor,
+                //           ),
+                //         ],
+                //       ),
+                //     ),
+                //   ],
+                // ),
+               
+               
                 const SizedBox(height: 8),
               ],
             ),

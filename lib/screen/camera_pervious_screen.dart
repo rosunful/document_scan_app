@@ -113,13 +113,13 @@ class _PageReviewScreenState extends State<PageReviewScreen> {
                         padding: const EdgeInsets.symmetric(vertical: 14),
                       ),
                       onPressed: () => Navigator.of(context).pop(),
-                      child: const Text('Looks Good'),
+                      child: const Text('Done'),
                     ),
                   ),
                   const SizedBox(width: 12),
                   Expanded(
                     child: ElevatedButton(
-                      style: ElevatedButton.styleFrom(
+                      style: ElevatedButton.styleFrom(                        
                         backgroundColor: colors.buttonColor,
                         foregroundColor: Colors.white,
                         padding: const EdgeInsets.symmetric(vertical: 14),

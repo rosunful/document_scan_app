@@ -10,6 +10,7 @@ import 'package:uuid/uuid.dart';
 import '../controller/fileType.dart';
 import '../model/document_model.dart';
 import '../model/scanned_document.dart';
+import '../services/public_file_exporter.dart';
 
 class DocumentRepository extends ChangeNotifier {
   static const _indexFileName = 'documents_index.json';
@@ -86,6 +87,7 @@ class DocumentRepository extends ChangeNotifier {
       title: title ?? _defaultTitle(),
       createdAt: DateTime.now(),
       pagePaths: savedPaths,
+      type: FileType.image,
     );
 
     _documents.insert(0, doc);
@@ -94,6 +96,117 @@ class DocumentRepository extends ChangeNotifier {
 
     unawaited(_exportToPublicGallery(savedPaths));
     return doc;
+  }
+
+  /// Imports one or more picked files (any type) as the user's own documents.
+  /// Unlike [saveDocument] (which bundles a set of images into a single
+  /// multi-page scan document), each file becomes its own document: it keeps
+  /// its original filename as title and its original file extension, and its
+  /// `type` is inferred from the extension so the list row and viewer match.
+  Future<void> saveImported(List<String> sourcePaths) async {
+    final dir = await _pagesDir();
+
+    for (final source in sourcePaths) {
+      final id = const Uuid().v4();
+      final type = fileTypeForPath(source);
+      final target = File(
+        '${dir.path}${Platform.pathSeparator}$id${_suffixFor(type)}',
+      );
+      await File(source).copy(target.path);
+
+      final doc = ScannedDocument(
+        id: id,
+        title: PublicFileExporter.basenameOf(source),
+        createdAt: DateTime.now(),
+        pagePaths: [target.path],
+        type: type,
+      );
+      _documents.insert(0, doc);
+      await _persistIndex();
+      notifyListeners();
+
+      unawaited(_exportPublicCopy(target.path, type, fileName: doc.title));
+    }
+  }
+
+  /// Infers what kind of document a picked file is from its file extension.
+  static FileType fileTypeForPath(String path) {
+    final ext = path.contains('.')
+        ? path.split('.').last.toLowerCase()
+        : '';
+    switch (ext) {
+      case 'pdf':
+        return FileType.pdf;
+      case 'xls':
+      case 'xlsx':
+      case 'csv':
+        return FileType.excel;
+      case 'txt':
+      case 'md':
+      case 'rtf':
+      case 'log':
+      case 'json':
+      case 'xml':
+      case 'html':
+        return FileType.text;
+      case 'jpg':
+      case 'jpeg':
+      case 'png':
+      case 'gif':
+      case 'webp':
+      case 'bmp':
+      case 'heic':
+      case 'heif':
+        return FileType.image;
+      default:
+        return FileType.text;
+    }
+  }
+
+  /// The file extension to keep for the stored copy of an imported file —
+  /// the original one for known images, a sensible one for everything else.
+  String _suffixFor(FileType type) {
+    switch (type) {
+      case FileType.pdf:
+        return '.pdf';
+      case FileType.excel:
+        return '.xlsx';
+      case FileType.text:
+        return '.txt';
+      case FileType.image:
+        return '.jpg';
+    }
+  }
+
+  String _mimeFor(FileType type) {
+    switch (type) {
+      case FileType.pdf:
+        return 'application/pdf';
+      case FileType.excel:
+        return 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+      case FileType.text:
+        return 'text/plain';
+      case FileType.image:
+        return 'image/jpeg';
+    }
+  }
+
+  /// Public copy: images go to the system gallery (as scans do), every other
+  /// kind goes to the public Downloads folder. Both are best-effort.
+  Future<void> _exportPublicCopy(
+    String path,
+    FileType type, {
+    String? fileName,
+  }) async {
+    if (type == FileType.image) {
+      await _exportToPublicGallery([path]);
+      return;
+    }
+    await PublicFileExporter.saveToDownloads(
+      path,
+      fileName: fileName,
+      mimeType: _mimeFor(type),
+    );
   }
 
   /// Best-effort — the app's own copy above is what the UI relies on, so a
@@ -128,6 +241,7 @@ class DocumentRepository extends ChangeNotifier {
       title: newTitle,
       createdAt: old.createdAt,
       pagePaths: old.pagePaths,
+      type: old.type,
     );
     await _persistIndex();
     notifyListeners();
@@ -193,13 +307,19 @@ class DocumentRepository extends ChangeNotifier {
     return ['All', ...sorted];
   }
 
-  List<MonthGroup> monthGroups(String filter) {
+  List<MonthGroup> monthGroups(String filter, {FileType? type}) {
     final filtered = filter == 'All'
         ? _documents
-        : _documents.where((d) => '${_monthAbbrev[d.createdAt.month]} ${d.createdAt.year}' == filter).toList();
+        : _documents
+            .where((d) => '${_monthAbbrev[d.createdAt.month]} ${d.createdAt.year}' == filter)
+            .toList();
+
+    final typed = type == null
+        ? filtered
+        : filtered.where((d) => d.type == type).toList();
 
     final byMonth = <String, List<ScannedDocument>>{};
-    for (final doc in filtered) {
+    for (final doc in typed) {
       final key = '${_monthNames[doc.createdAt.month]} ${doc.createdAt.year}';
       byMonth.putIfAbsent(key, () => []).add(doc);
     }
@@ -209,7 +329,7 @@ class DocumentRepository extends ChangeNotifier {
         return DocumentItem(
           id: doc.id,
           name: doc.title,
-          type: FileType.image,
+          type: doc.type,
           pages: doc.pagePaths.length,
           dateLabel: _dateLabel(doc.createdAt),
           pagePaths: doc.pagePaths,

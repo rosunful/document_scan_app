@@ -4,111 +4,73 @@ import 'dart:math' as math;
 import 'package:flutter/foundation.dart';
 import 'package:opencv_dart/opencv_dart.dart' as cv;
 
-class AutoCropRequest {
+import 'image_orientation.dart';
+
+class _PerspectiveRequest {
   final String sourcePath;
   final String targetPath;
+  final List<List<double>> quad;
 
-  const AutoCropRequest({required this.sourcePath, required this.targetPath});
+  const _PerspectiveRequest(this.sourcePath, this.targetPath, this.quad);
 }
 
 class AutoCropService {
   AutoCropService._();
 
-  /// Runs off the UI thread. Returns the cropped+perspective-corrected file
-  /// path, or null if no confident document boundary was found (caller
-  /// should keep the original in that case).
-  static Future<String?> crop(AutoCropRequest request) => compute(_autoCropEntry, request);
+  /// Warps the image so the given quad (top-left, top-right, bottom-right,
+  /// bottom-left in upright image coordinates) becomes an axis-aligned
+  /// rectangle. Returns the written file path, or null on failure.
+  static Future<String?> applyPerspective({
+    required String sourcePath,
+    required String targetPath,
+    required List<List<double>> quad,
+  }) =>
+      compute(_applyPerspectiveEntry, _PerspectiveRequest(sourcePath, targetPath, quad));
 }
 
-String? _autoCropEntry(AutoCropRequest request) {
+String? _applyPerspectiveEntry(_PerspectiveRequest request) {
   cv.Mat? source;
   cv.Mat? warped;
   try {
-    source = cv.imread(request.sourcePath, flags: cv.IMREAD_COLOR);
+    source = _readImage(request.sourcePath);
     if (source.isEmpty) return null;
 
-    final quad = _findDocumentQuad(source);
-    if (quad == null) return null;
-
+    final quad = cv.VecPoint2f.fromList([
+      for (final p in request.quad) cv.Point2f(p[0], p[1]),
+    ]);
     warped = _warpPerspective(source, quad);
     final ok = cv.imwrite(
-  request.targetPath,
-  warped,
-  params: cv.VecI32.fromList([cv.IMWRITE_JPEG_QUALITY, 92]),
-);
+      request.targetPath,
+      warped,
+      params: cv.VecI32.fromList([cv.IMWRITE_JPEG_QUALITY, 92]),
+    );
     return ok ? request.targetPath : null;
-  } catch (_) {
-    return null;
   } finally {
     source?.dispose();
     warped?.dispose();
   }
 }
 
-/// Finds the largest quadrilateral contour in the image, scaled back to
-/// full-resolution coordinates. Returns null if nothing convincing enough.
-cv.VecPoint2f? _findDocumentQuad(cv.Mat source) {
-  const analysisWidth = 700.0;
-  final scale = source.cols > analysisWidth ? analysisWidth / source.cols : 1.0;
+/// Loads the image EXIF-corrected. OpenCV ignores the EXIF orientation tag,
+/// but Flutter honours it when it renders `Image.file`, so a phone-shot photo
+/// (typically stored rotated by the sensor) must be rotated here to the same,
+/// upright orientation before warping — otherwise the output would be sideways
+/// relative to the corners the user dragged on the upright image.
+cv.Mat _readImage(String path) {
+  final bytes = File(path).readAsBytesSync();
+  final img = cv.imdecode(bytes, cv.IMREAD_COLOR);
+  if (img.isEmpty) return img;
 
-  cv.Mat? small, gray, blurred, edges, dilated;
-  try {
-    small = scale < 1.0
-        ? cv.resize(source, (0, 0), fx: scale, fy: scale, interpolation: cv.INTER_AREA)
-        : source.clone();
+  final turns = jpegExifQuarterTurns(bytes);
+  if (turns == 0) return img;
 
-    gray = cv.cvtColor(small, cv.COLOR_BGR2GRAY);
-    blurred = cv.gaussianBlur(gray, (5, 5), 0);
-    edges = cv.canny(blurred, 60, 160);
-    dilated = cv.dilate(edges, cv.getStructuringElement(cv.MORPH_RECT, (3, 3)));
-
-    final contours = cv.findContours(dilated, cv.RETR_LIST, cv.CHAIN_APPROX_SIMPLE);
-    final imageArea = small.rows * small.cols;
-
-    cv.VecPoint? bestQuad;
-    double bestArea = 0;
-
-    for (final contour in contours.$1) {
-      final area = cv.contourArea(contour);
-      // A real page fills a meaningful chunk of the frame; ignore specks
-      // and ignore something suspiciously close to the whole frame (that's
-      // usually the frame border itself, not the document).
-      if (area < imageArea * 0.2 || area > imageArea * 0.98) continue;
-
-      final perimeter = cv.arcLength(contour, true);
-      final approx = cv.approxPolyDP(contour, 0.02 * perimeter, true);
-      if (approx.length == 4 && area > bestArea && cv.isContourConvex(approx)) {
-        bestQuad = approx;
-        bestArea = area;
-      }
-    }
-
-    if (bestQuad == null) return null;
-
-    final points = bestQuad.toList();
-    final ordered = _orderCorners(points.map((p) => (p.x / scale, p.y / scale)).toList());
-    return cv.VecPoint2f.fromList(ordered.map((p) => cv.Point2f(p.$1, p.$2)).toList());
-  } finally {
-    small?.dispose();
-    gray?.dispose();
-    blurred?.dispose();
-    edges?.dispose();
-    dilated?.dispose();
-  }
-}
-
-/// Orders four points as top-left, top-right, bottom-right, bottom-left —
-/// required before warpPerspective, since contour point order is arbitrary.
-List<(double, double)> _orderCorners(List<(double, double)> points) {
-  final sums = points.map((p) => p.$1 + p.$2).toList();
-  final diffs = points.map((p) => p.$2 - p.$1).toList();
-
-  final topLeft = points[sums.indexOf(sums.reduce(math.min))];
-  final bottomRight = points[sums.indexOf(sums.reduce(math.max))];
-  final topRight = points[diffs.indexOf(diffs.reduce(math.min))];
-  final bottomLeft = points[diffs.indexOf(diffs.reduce(math.max))];
-
-  return [topLeft, topRight, bottomRight, bottomLeft];
+  final cv.Mat rotated = switch (turns) {
+    1 => cv.rotate(img, cv.ROTATE_90_CLOCKWISE),
+    2 => cv.rotate(img, cv.ROTATE_180),
+    _ => cv.rotate(img, cv.ROTATE_90_COUNTERCLOCKWISE),
+  };
+  img.dispose();
+  return rotated;
 }
 
 cv.Mat _warpPerspective(cv.Mat source, cv.VecPoint2f quad) {

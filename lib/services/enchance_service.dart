@@ -2,12 +2,13 @@ import 'dart:math' as math;
 import 'package:flutter/foundation.dart';
 import 'package:opencv_dart/opencv_dart.dart' as cv;
 
-enum EnhanceFilter { original, magic, grayscale, blackWhite }
+enum EnhanceFilter { original, magic, clean, grayscale, blackWhite }
 
 extension EnhanceFilterLabel on EnhanceFilter {
   String get label => switch (this) {
         EnhanceFilter.original => 'Original',
         EnhanceFilter.magic => 'Magic Color',
+        EnhanceFilter.clean => 'Clean',
         EnhanceFilter.grayscale => 'Grayscale',
         EnhanceFilter.blackWhite => 'B&W',
       };
@@ -16,17 +17,40 @@ extension EnhanceFilterLabel on EnhanceFilter {
 class EnhanceSettings {
   final EnhanceFilter filter;
   final int quarterTurns;
+  final int brightness; // -100..100, 0 = unchanged
+  final int contrast;   // -100..100, 0 = unchanged
+  final int saturation; // -100..100, 0 = unchanged
 
-  const EnhanceSettings({this.filter = EnhanceFilter.magic, this.quarterTurns = 0});
+  const EnhanceSettings({
+    this.filter = EnhanceFilter.magic,
+    this.quarterTurns = 0,
+    this.brightness = 0,
+    this.contrast = 0,
+    this.saturation = 0,
+  });
 
-  EnhanceSettings copyWith({EnhanceFilter? filter, int? quarterTurns}) {
+  EnhanceSettings copyWith({
+    EnhanceFilter? filter,
+    int? quarterTurns,
+    int? brightness,
+    int? contrast,
+    int? saturation,
+  }) {
     return EnhanceSettings(
       filter: filter ?? this.filter,
       quarterTurns: quarterTurns ?? this.quarterTurns,
+      brightness: brightness ?? this.brightness,
+      contrast: contrast ?? this.contrast,
+      saturation: saturation ?? this.saturation,
     );
   }
 
-  bool get isUntouched => filter == EnhanceFilter.original && quarterTurns == 0;
+  bool get isUntouched =>
+      filter == EnhanceFilter.original &&
+      quarterTurns == 0 &&
+      brightness == 0 &&
+      contrast == 0 &&
+      saturation == 0;
 }
 
 class EnhanceFileRequest {
@@ -214,22 +238,32 @@ cv.Mat _process(cv.Mat input, EnhanceSettings settings) {
     working = r;
   }
 
+  cv.Mat result;
   switch (settings.filter) {
     case EnhanceFilter.original:
-      return working;
+      result = working;
+      break;
     case EnhanceFilter.magic:
-      final r = _magicColor(working);
+      result = _magicColor(working);
       working.dispose();
-      return r;
+      break;
+    case EnhanceFilter.clean:
+      result = _cleanPaper(working);
+      working.dispose();
+      break;
     case EnhanceFilter.grayscale:
-      final r = _grayscaleEnhanced(working);
+      result = _grayscaleEnhanced(working);
       working.dispose();
-      return r;
+      break;
     case EnhanceFilter.blackWhite:
-      final r = _blackWhite(working);
+      result = _blackWhite(working);
       working.dispose();
-      return r;
+      break;
   }
+
+  final adjusted = _applyAdjustments(result, settings);
+  if (!identical(adjusted, result)) result.dispose();
+  return adjusted;
 }
 
 /// CLAHE on the L channel (LAB colour space) flattens uneven lighting while
@@ -276,6 +310,98 @@ cv.Mat _magicColor(cv.Mat bgr) {
     sBoosted?.dispose();
     hsvMerged?.dispose();
   }
+}
+
+/// "Clean" — the flat, shadow-free scanner look. Paper background is
+/// whitened by dividing out a heavily blurred per-channel background
+/// estimate (kills shadows and uneven lighting), luminance is flattened with
+/// CLAHE, then a mild saturation lift and an unsharp mask make text pop.
+cv.Mat _cleanPaper(cv.Mat bgr) {
+  final channels = cv.split(bgr);
+  final normalized = <cv.Mat>[];
+  for (final ch in channels) {
+    final bg = cv.gaussianBlur(ch, (0, 0), 30.0);
+    final n = cv.divide(ch, bg, scale: 255);
+    normalized.add(n);
+    bg.dispose();
+    ch.dispose();
+  }
+  final flat = cv.merge(cv.VecMat.fromList(normalized));
+  for (final n in normalized) {
+    n.dispose();
+  }
+
+  final lab = cv.cvtColor(flat, cv.COLOR_BGR2Lab);
+  flat.dispose();
+  final lChannels = cv.split(lab);
+  final l = lChannels[0], a = lChannels[1], b = lChannels[2];
+  final clahe = cv.CLAHE(1.8, (8, 8));
+  final clahedL = clahe.apply(l);
+  l.dispose();
+  final mergedLab = cv.merge(cv.VecMat.fromList([clahedL, a, b]));
+  clahedL.dispose();
+  a.dispose();
+  b.dispose();
+  lab.dispose();
+  final colorFlat = cv.cvtColor(mergedLab, cv.COLOR_Lab2BGR);
+  mergedLab.dispose();
+
+  final hsv = cv.cvtColor(colorFlat, cv.COLOR_BGR2HSV);
+  colorFlat.dispose();
+  final hChannels = cv.split(hsv);
+  final h = hChannels[0], s = hChannels[1], v = hChannels[2];
+  final sBoosted = cv.convertScaleAbs(s, alpha: 1.08);
+  s.dispose();
+  final mergedHsv = cv.merge(cv.VecMat.fromList([h, sBoosted, v]));
+  h.dispose();
+  sBoosted.dispose();
+  v.dispose();
+  hsv.dispose();
+  final finalColor = cv.cvtColor(mergedHsv, cv.COLOR_HSV2BGR);
+  mergedHsv.dispose();
+
+  final blurred = cv.gaussianBlur(finalColor, (0, 0), 1.2);
+  final sharp = cv.addWeighted(finalColor, 1.45, blurred, -0.45, 0);
+  blurred.dispose();
+  finalColor.dispose();
+  return sharp;
+}
+
+/// Applies the user's Brightness / Contrast / Saturation tuning on top of
+/// the chosen filter. Returns [bgr] unchanged when nothing needs adjusting.
+cv.Mat _applyAdjustments(cv.Mat bgr, EnhanceSettings settings) {
+  if (settings.brightness == 0 && settings.contrast == 0 && settings.saturation == 0) {
+    return bgr;
+  }
+
+  final contrast = settings.contrast;
+  final alphaC = contrast >= 0
+      ? (255 + contrast) / 255
+      : 255 / (255 - contrast);
+  final beta = settings.brightness * 128 / 100;
+
+  var out = cv.convertScaleAbs(bgr, alpha: alphaC, beta: beta);
+
+  final wantsSaturation = settings.saturation != 0 &&
+      settings.filter != EnhanceFilter.grayscale &&
+      settings.filter != EnhanceFilter.blackWhite;
+  if (wantsSaturation) {
+    final hsv = cv.cvtColor(out, cv.COLOR_BGR2HSV);
+    final ch = cv.split(hsv);
+    final h = ch[0], sM = ch[1], v = ch[2];
+    final sB = cv.convertScaleAbs(sM, alpha: 1 + settings.saturation / 100);
+    final merged = cv.merge(cv.VecMat.fromList([h, sB, v]));
+    final back = cv.cvtColor(merged, cv.COLOR_HSV2BGR);
+    out.dispose();
+    hsv.dispose();
+    h.dispose();
+    sM.dispose();
+    v.dispose();
+    sB.dispose();
+    merged.dispose();
+    out = back;
+  }
+  return out;
 }
 
 /// Grayscale with the same CLAHE lighting-normalization as Magic Color, so

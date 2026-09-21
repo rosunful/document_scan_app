@@ -15,6 +15,13 @@ class MockData {
       iconColor: Color(0xFF129D7C),
     ),
     ToolItem(
+      icon: Icons.document_scanner_rounded,
+      title: 'Auto Scan',
+      subtitle: 'One-tap auto-crop scan',
+      iconBackground: Color(0xFFFDE7D8),
+      iconColor: Color(0xFFE5692B),
+    ),
+    ToolItem(
       icon: Icons.picture_as_pdf_rounded,
       title: 'Image to PDF',
       subtitle: 'Convert images to PDF',

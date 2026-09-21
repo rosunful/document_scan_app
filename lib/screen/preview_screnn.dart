@@ -6,10 +6,10 @@ import 'package:image_cropper/image_cropper.dart';
 import 'package:provider/provider.dart';
 
 import '../repository/document_repository.dart';
-import '../services/auto_crop_service.dart';
 import '../theme/app_theme.dart';
 import 'camera_scan_preview_screen.dart';
 import 'enchance_screen.dart';
+import 'perspective_crop_screen.dart';
 
 class ScanPreviewScreen extends StatefulWidget {
   final List<String> imagePaths;
@@ -21,22 +21,19 @@ class ScanPreviewScreen extends StatefulWidget {
 }
 
 /// One captured page and everything we've derived from it.
-class _PageEntry {  
+class _PageEntry {
   final String originalPath;
-  String? autoPath;    // result of auto-crop, null until it runs
-  String? manualPath;  // user's own crop, wins over everything
-  bool autoEnabled;
-  bool busy;
-  bool autoFailed;     // detection ran and found nothing usable
+  String? manualPath;      // user's own crop, wins over everything
+  String? perspectivePath; // user's perspective fix, beats manual
 
-  _PageEntry(this.originalPath, {this.autoEnabled = true, this.busy = false, this.autoFailed = false});
+  _PageEntry(this.originalPath);
 
-  String get displayPath => manualPath ?? (autoEnabled ? (autoPath ?? originalPath) : originalPath);
+  String get displayPath => manualPath ?? perspectivePath ?? originalPath;
 
   List<String> get allPaths => [
         originalPath,
-        if (autoPath != null) autoPath!,
-        if (manualPath != null) manualPath!,
+        ?manualPath,
+        ?perspectivePath,
       ];
 }
 
@@ -48,8 +45,7 @@ class _ScanPreviewScreenState extends State<ScanPreviewScreen> {
   @override
   void initState() {
     super.initState();
-    _pages = widget.imagePaths.map((p) => _PageEntry(p, busy: true)).toList();
-    _autoCropAll();
+    _pages = widget.imagePaths.map((p) => _PageEntry(p)).toList();
   }
 
   @override
@@ -76,63 +72,6 @@ class _ScanPreviewScreenState extends State<ScanPreviewScreen> {
       if (file.existsSync()) file.deleteSync();
     } catch (_) {
       // Best-effort cleanup.
-    }
-  }
-
-  Future<void> _autoCropAll() async {
-    for (var i = 0; i < _pages.length; i++) {
-      await _autoCropOne(i);
-    }
-  }
-
-  Future<void> _autoCropOne(int index) async {
-    final entry = _pages[index];
-    if (entry.autoPath != null || entry.autoFailed) {
-      if (entry.busy && mounted) setState(() => entry.busy = false);
-      return;
-    }
-
-    if (mounted) setState(() => entry.busy = true);
-
-    final result = await AutoCropService.crop(
-      AutoCropRequest(
-        sourcePath: entry.originalPath,
-        targetPath: _derivedPath(entry.originalPath, 'auto'),
-      ),
-    );
-
-    if (!mounted) return;
-    setState(() {
-      entry.busy = false;
-      if (result != null) {
-        entry.autoPath = result;
-      } else {
-        entry.autoFailed = true; // keep the original, don't retry on every toggle
-      }
-    });
-  }
-
-  Future<void> _toggleAutoCrop() async {
-    final entry = _current;
-    if (entry.busy) return;
-
-    if (entry.autoEnabled) {
-      setState(() => entry.autoEnabled = false);
-      return;
-    }
-
-    // Turning auto back on discards a manual crop — they're alternatives.
-    setState(() {
-      _deleteQuietly(entry.manualPath);
-      entry.manualPath = null;
-      entry.autoEnabled = true;
-    });
-    await _autoCropOne(_page);
-
-    if (mounted && entry.autoFailed) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text("Couldn't find the page edges — crop it manually.")),
-      );
     }
   }
 
@@ -165,8 +104,9 @@ class _ScanPreviewScreenState extends State<ScanPreviewScreen> {
 
       setState(() {
         _deleteQuietly(entry.manualPath);
+        _deleteQuietly(entry.perspectivePath);
         entry.manualPath = cropped.path;
-        entry.autoEnabled = false;
+        entry.perspectivePath = null;
       });
     } on PlatformException catch (e) {
       if (mounted) {
@@ -175,6 +115,27 @@ class _ScanPreviewScreenState extends State<ScanPreviewScreen> {
         );
       }
     }
+  }
+
+  Future<void> _cropPerspective() async {
+    final entry = _current;
+    final target = _derivedPath(entry.originalPath, 'persp');
+    final result = await Navigator.of(context).push<String>(
+      MaterialPageRoute(
+        builder: (_) => PerspectiveCropScreen(
+          sourcePath: entry.originalPath,
+          targetPath: target,
+        ),
+      ),
+    );
+    if (result == null || !mounted) return;
+
+    setState(() {
+      _deleteQuietly(entry.manualPath);
+      _deleteQuietly(entry.perspectivePath);
+      entry.manualPath = null;
+      entry.perspectivePath = result;
+    });
   }
 
   Future<void> _retake() async {
@@ -187,24 +148,20 @@ class _ScanPreviewScreenState extends State<ScanPreviewScreen> {
     final old = _pages[index];
 
     setState(() {
-      _pages[index] = _PageEntry(captured.first, busy: true);
+      _pages[index] = _PageEntry(captured.first);
     });
 
     // Anything extra they shot during the retake gets appended rather than lost.
     if (captured.length > 1) {
       setState(() {
         for (final path in captured.skip(1)) {
-          _pages.add(_PageEntry(path, busy: true));
+          _pages.add(_PageEntry(path));
         }
       });
     }
 
     for (final path in old.allPaths) {
       _deleteQuietly(path);
-    }
-
-    for (var i = 0; i < _pages.length; i++) {
-      if (_pages[i].busy) await _autoCropOne(i);
     }
   }
 
@@ -251,13 +208,12 @@ class _ScanPreviewScreenState extends State<ScanPreviewScreen> {
     final colors = context.myAppColors;
     final pageCount = _pages.length;
     final entry = _current;
-    final autoActive = entry.autoEnabled && entry.manualPath == null;
 
     return Scaffold(
-      backgroundColor: Colors.black,
+      backgroundColor: colors.backgroundColor,
       appBar: AppBar(
-        backgroundColor: Colors.black,
-        foregroundColor: Colors.white,
+        backgroundColor: colors.backgroundColor,
+        foregroundColor: colors.headingTextColor,
         titleSpacing: 0,
         title: Text(
           pageCount > 1 ? 'Page ${_page + 1} of $pageCount' : 'Preview',
@@ -265,25 +221,25 @@ class _ScanPreviewScreenState extends State<ScanPreviewScreen> {
         ),
         actions: [
           _AppBarAction(
-            icon: Icons.crop_free_rounded,
-            label: 'Auto crop',
-            active: autoActive,
-            activeColor: colors.buttonColor,
-            onTap: entry.busy ? null : _toggleAutoCrop,
-          ),
-          _AppBarAction(
             icon: Icons.crop_rounded,
             label: 'Crop manually',
             active: entry.manualPath != null,
             activeColor: colors.buttonColor,
-            onTap: entry.busy ? null : _cropManually,
+            onTap: _cropManually,
+          ),
+          _AppBarAction(
+            icon: Icons.view_in_ar_rounded,
+            label: 'Fix perspective',
+            active: entry.perspectivePath != null,
+            activeColor: colors.buttonColor,
+            onTap: _cropPerspective,
           ),
           _AppBarAction(
             icon: Icons.refresh_rounded,
             label: 'Retake',
             active: false,
             activeColor: colors.buttonColor,
-            onTap: entry.busy ? null : _retake,
+            onTap: _retake,
           ),
           const SizedBox(width: 4),
         ],
@@ -310,38 +266,22 @@ class _ScanPreviewScreenState extends State<ScanPreviewScreen> {
                         ),
                       ),
                     ),
-                    if (page.busy)
-                      Container(
-                        color: Colors.black45,
-                        alignment: Alignment.center,
-                        child: Column(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            CircularProgressIndicator(color: colors.buttonColor),
-                            const SizedBox(height: 12),
-                            const Text(
-                              'Finding page edges…',
-                              style: TextStyle(color: Colors.white70, fontSize: 13),
-                            ),
-                          ],
-                        ),
-                      ),
                   ],
                 );
               },
             ),
           ),
-          Padding(
-            padding: const EdgeInsets.only(top: 8),
-            child: Text(
-              entry.manualPath != null
-                  ? 'Cropped manually'
-                  : entry.autoEnabled
-                      ? (entry.autoFailed ? 'No edges detected — showing original' : 'Auto-cropped')
-                      : 'Auto crop off — showing original',
-              style: const TextStyle(color: Colors.white54, fontSize: 12),
-            ),
-          ),
+//           Padding(
+//             padding: const EdgeInsets.only(top: 8),
+//             child: Text(
+//               entry.manualPath != null
+//                   ? 'Cropped manually'
+// : entry.perspectivePath != null
+//                           ? 'Perspective corrected'
+//                           : 'Original',
+//               style: const TextStyle(color: Colors.white54, fontSize: 12),
+//             ),
+//           ),
           if (pageCount > 1)
             Padding(
               padding: const EdgeInsets.symmetric(vertical: 10),
@@ -355,7 +295,7 @@ class _ScanPreviewScreenState extends State<ScanPreviewScreen> {
                     width: active ? 18 : 6,
                     height: 6,
                     decoration: BoxDecoration(
-                      color: active ? colors.buttonColor : Colors.white38,
+                      color: active ? colors.buttonColor : colors.borderColor,
                       borderRadius: BorderRadius.circular(3),
                     ),
                   );
@@ -371,8 +311,8 @@ class _ScanPreviewScreenState extends State<ScanPreviewScreen> {
                   Expanded(
                     child: OutlinedButton(
                       style: OutlinedButton.styleFrom(
-                        foregroundColor: Colors.white,
-                        side: const BorderSide(color: Colors.white54),
+                        foregroundColor: colors.headingTextColor,
+                        side: BorderSide(color: colors.borderColor),
                         padding: const EdgeInsets.symmetric(vertical: 14),
                       ),
                       onPressed: _discard,
@@ -387,7 +327,7 @@ class _ScanPreviewScreenState extends State<ScanPreviewScreen> {
                         foregroundColor: Colors.white,
                         padding: const EdgeInsets.symmetric(vertical: 14),
                       ),
-                      onPressed: _pages.any((p) => p.busy) ? null : _save,
+                      onPressed: _save,
                       child: Text(pageCount > 1 ? 'Save $pageCount Pages' : 'Save Document'),
                     ),
                   ),
@@ -419,13 +359,14 @@ class _AppBarAction extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.myAppColors;
     final disabled = onTap == null;
     return Tooltip(
       message: label,
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 3, vertical: 8),
         child: Material(
-          color: active ? activeColor : Colors.white12,
+          color: active ? activeColor : colors.borderColor,
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(9)),
           child: InkWell(
             borderRadius: BorderRadius.circular(9),
@@ -436,7 +377,11 @@ class _AppBarAction extends StatelessWidget {
               child: Icon(
                 icon,
                 size: 19,
-                color: disabled ? Colors.white30 : Colors.white,
+                color: disabled
+                    ? colors.headingTextColor.withValues(alpha: 0.35)
+                    : active
+                        ? Colors.white
+                        : colors.headingTextColor,
               ),
             ),
           ),
@@ -447,138 +392,3 @@ class _AppBarAction extends StatelessWidget {
 }
 
 
-
-// import 'dart:io';
-// import 'package:flutter/material.dart';
-// import '../theme/app_theme.dart';
-
-// class ScanPreviewScreen extends StatefulWidget {
-//   final List<String> imagePaths;
-
-//   const ScanPreviewScreen({super.key, required this.imagePaths});
-
-//   @override
-//   State<ScanPreviewScreen> createState() => _ScanPreviewScreenState();
-// }
-
-// class _ScanPreviewScreenState extends State<ScanPreviewScreen> {
-//   final PageController _controller = PageController();
-//   int _page = 0;
-
-//   @override
-//   void dispose() {
-//     _controller.dispose();
-//     super.dispose();
-//   }
-
-//   void _discard(BuildContext context) {
-//     // We own these files directly now (the camera package writes them to a
-//     // temp dir) — delete them since the user chose not to keep this scan.
-//     for (final path in widget.imagePaths) {
-//       try {
-//         final file = File(path);
-//         if (file.existsSync()) file.deleteSync();
-//       } catch (_) {
-//         // Best-effort cleanup; ignore failures.
-//       }
-//     }
-//     Navigator.of(context).pop();
-//   }
-
-//   void _save(BuildContext context) {
-//     // TODO: once a real repository replaces MockData, copy widget.imagePaths
-//     // into permanent storage and create real DocumentItem entries here.
-//     final pageCount = widget.imagePaths.length;
-//     final messenger = ScaffoldMessenger.of(context);
-//     Navigator.of(context).pop();
-//     messenger.showSnackBar(
-//       SnackBar(content: Text('$pageCount page${pageCount == 1 ? '' : 's'} saved (mock)')),
-//     );
-//   }
-
-//   @override
-//   Widget build(BuildContext context) {
-//     final colors = context.myAppColors;
-//     final pageCount = widget.imagePaths.length;
-
-//     return Scaffold(
-//       backgroundColor: Colors.black,
-//       appBar: AppBar(
-//         backgroundColor: Colors.black,
-//         foregroundColor: Colors.white,
-//         title: Text(pageCount > 1 ? 'Page ${_page + 1} of $pageCount' : 'Preview'),
-//       ),
-//       body: Column(
-//         children: [
-//           Expanded(
-//             child: PageView.builder(
-//               controller: _controller,
-//               itemCount: pageCount,
-//               onPageChanged: (i) => setState(() => _page = i),
-//               itemBuilder: (context, i) => InteractiveViewer(
-//                 child: Image.file(
-//                   File(widget.imagePaths[i]),
-//                   fit: BoxFit.contain,
-//                   width: double.infinity,
-//                 ),
-//               ),
-//             ),
-//           ),
-//           if (pageCount > 1)
-//             Padding(
-//               padding: const EdgeInsets.symmetric(vertical: 10),
-//               child: Row(
-//                 mainAxisAlignment: MainAxisAlignment.center,
-//                 children: List.generate(pageCount, (i) {
-//                   final active = i == _page;
-//                   return AnimatedContainer(
-//                     duration: const Duration(milliseconds: 150),
-//                     margin: const EdgeInsets.symmetric(horizontal: 3),
-//                     width: active ? 18 : 6,
-//                     height: 6,
-//                     decoration: BoxDecoration(
-//                       color: active ? colors.buttonColor : Colors.white38,
-//                       borderRadius: BorderRadius.circular(3),
-//                     ),
-//                   );
-//                 }),
-//               ),
-//             ),
-//           SafeArea(
-//             top: false,
-//             child: Padding(
-//               padding: const EdgeInsets.all(16),
-//               child: Row(
-//                 children: [
-//                   Expanded(
-//                     child: OutlinedButton(
-//                       style: OutlinedButton.styleFrom(
-//                         foregroundColor: Colors.white,
-//                         side: const BorderSide(color: Colors.white54),
-//                         padding: const EdgeInsets.symmetric(vertical: 14),
-//                       ),
-//                       onPressed: () => _discard(context),
-//                       child: const Text('Discard'),
-//                     ),
-//                   ),
-//                   const SizedBox(width: 12),
-//                   Expanded(
-//                     child: ElevatedButton(
-//                       style: ElevatedButton.styleFrom(
-//                         backgroundColor: colors.buttonColor,
-//                         foregroundColor: Colors.white,
-//                         padding: const EdgeInsets.symmetric(vertical: 14),
-//                       ),
-//                       onPressed: () => _save(context),
-//                       child: Text(pageCount > 1 ? 'Save $pageCount Pages' : 'Save Document'),
-//                     ),
-//                   ),
-//                 ],
-//               ),
-//             ),
-//           ),
-//         ],
-//       ),
-//     );
-//   }
-// }

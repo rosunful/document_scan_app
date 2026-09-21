@@ -29,6 +29,7 @@ class _EnhancePage {
 
 const _presetDescriptions = {
   EnhanceFilter.magic: 'Removes shadows, keeps colour — best for most documents',
+  EnhanceFilter.clean: 'Whitens the paper and sharpens text — a fresh, scanned look',
   EnhanceFilter.blackWhite: 'High contrast — best for text-only pages',
   EnhanceFilter.grayscale: 'Softer than B&W — good for printed docs with images',
   EnhanceFilter.original: 'No enhancement, just your crop',
@@ -45,6 +46,7 @@ class _EnhanceScreenState extends State<EnhanceScreen> {
   bool _rendering = false;
   bool _saving = false;
   int _savedCount = 0;
+  bool _tuning = false;
 
   @override
   void initState() {
@@ -130,10 +132,15 @@ class _EnhanceScreenState extends State<EnhanceScreen> {
   }
 
   void _applyToAll() {
-    final filter = _page.settings.filter;
+    final settings = _page.settings;
     for (var i = 0; i < _pages.length; i++) {
       if (i == _index) continue;
-      _pages[i].settings = _pages[i].settings.copyWith(filter: filter);
+      _pages[i].settings = _pages[i].settings.copyWith(
+            filter: settings.filter,
+            brightness: settings.brightness,
+            contrast: settings.contrast,
+            saturation: settings.saturation,
+          );
     }
     setState(() {});
     ScaffoldMessenger.of(context).showSnackBar(
@@ -142,6 +149,21 @@ class _EnhanceScreenState extends State<EnhanceScreen> {
     for (var i = 0; i < _pages.length; i++) {
       if (i != _index && _pages[i].previewSource != null) unawaited(_render(i));
     }
+  }
+
+  void _setAdjustment(EnhanceSettings Function(EnhanceSettings) builder) {
+    setState(() => _page.settings = builder(_page.settings));
+  }
+
+  void _resetAdjustments() {
+    final s = _page.settings;
+    setState(() {
+      _page.settings = s.copyWith(brightness: 0, contrast: 0, saturation: 0);
+    });
+    _render(_index);
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Adjustments reset')),
+    );
   }
 
   String _targetPath(String source) {
@@ -189,15 +211,23 @@ class _EnhanceScreenState extends State<EnhanceScreen> {
     return PopScope(
       canPop: !_saving,
       child: Scaffold(
-        backgroundColor: Colors.black,
+        backgroundColor: colors.backgroundColor,
         appBar: AppBar(
-          backgroundColor: Colors.black,
-          foregroundColor: Colors.white,
+          backgroundColor: colors.backgroundColor,
+          foregroundColor: colors.headingTextColor,
           title: Text(
             total > 1 ? 'Enhance — page ${_index + 1} of $total' : 'Enhance',
             style: const TextStyle(fontSize: 16),
           ),
           actions: [
+            IconButton(
+              tooltip: 'Tune',
+              icon: Icon(
+                _tuning ? Icons.tune_rounded : Icons.tune_outlined,
+                color: _tuning ? colors.buttonColor : colors.headingTextColor,
+              ),
+              onPressed: _saving ? null : () => setState(() => _tuning = !_tuning),
+            ),
             IconButton(
               tooltip: 'Rotate',
               icon: const Icon(Icons.rotate_right_rounded),
@@ -238,13 +268,16 @@ class _EnhanceScreenState extends State<EnhanceScreen> {
                           else
                             Center(child: CircularProgressIndicator(color: colors.buttonColor)),
                           if (i == _index && _rendering && bytes != null)
-                            const Positioned(
+                            Positioned(
                               top: 12,
                               right: 12,
                               child: SizedBox(
                                 width: 18,
                                 height: 18,
-                                child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white70),
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                  color: colors.headingTextColor.withValues(alpha: 0.7),
+                                ),
                               ),
                             ),
                         ],
@@ -253,12 +286,13 @@ class _EnhanceScreenState extends State<EnhanceScreen> {
                   ),
                 ),
                 _buildPresetPicker(colors),
+                if (_tuning) _buildTuning(colors),
                 _buildActions(colors, total),
               ],
             ),
             if (_saving)
               Container(
-                color: Colors.black87,
+                color: colors.backgroundColor.withValues(alpha: 0.92),
                 alignment: Alignment.center,
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
@@ -267,7 +301,10 @@ class _EnhanceScreenState extends State<EnhanceScreen> {
                     const SizedBox(height: 16),
                     Text(
                       'Enhancing page ${_savedCount + 1} of $total…',
-                      style: const TextStyle(color: Colors.white70, fontSize: 13),
+                      style: TextStyle(
+                        color: colors.headingTextColor.withValues(alpha: 0.75),
+                        fontSize: 13,
+                      ),
                     ),
                   ],
                 ),
@@ -288,7 +325,7 @@ class _EnhanceScreenState extends State<EnhanceScreen> {
         scrollDirection: Axis.horizontal,
         padding: const EdgeInsets.fromLTRB(16, 10, 16, 6),
         itemCount: EnhanceFilter.values.length,
-        separatorBuilder: (_, __) => const SizedBox(width: 10),
+        separatorBuilder: (_, _) => const SizedBox(width: 10),
         itemBuilder: (context, i) {
           final filter = EnhanceFilter.values[i];
           final isSelected = selected == filter;
@@ -306,7 +343,7 @@ class _EnhanceScreenState extends State<EnhanceScreen> {
                       decoration: BoxDecoration(
                         borderRadius: BorderRadius.circular(10),
                         border: Border.all(
-                          color: isSelected ? colors.buttonColor : Colors.white24,
+                          color: isSelected ? colors.buttonColor : colors.borderColor,
                           width: isSelected ? 2.5 : 1,
                         ),
                       ),
@@ -316,7 +353,7 @@ class _EnhanceScreenState extends State<EnhanceScreen> {
                         children: [
                           thumb != null
                               ? Image.memory(thumb, fit: BoxFit.cover, gaplessPlayback: true)
-                              : const ColoredBox(color: Colors.white10),
+                              : ColoredBox(color: colors.cardColor),
                           if (isSelected)
                             Positioned(
                               top: 4,
@@ -340,7 +377,9 @@ class _EnhanceScreenState extends State<EnhanceScreen> {
                     textAlign: TextAlign.center,
                     style: TextStyle(
                       fontSize: 12,
-                      color: isSelected ? colors.buttonColor : Colors.white70,
+                      color: isSelected
+                          ? colors.buttonColor
+                          : colors.headingTextColor.withValues(alpha: 0.75),
                       fontWeight: isSelected ? FontWeight.w700 : FontWeight.w400,
                     ),
                   ),
@@ -350,6 +389,101 @@ class _EnhanceScreenState extends State<EnhanceScreen> {
           );
         },
       ),
+    );
+  }
+
+  Widget _buildTuning(CustomAppColors colors) {
+    final s = _page.settings;
+    return Container(
+      color: colors.searchbarColor,
+      padding: const EdgeInsets.fromLTRB(20, 6, 20, 4),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          _tuneSlider(
+            colors,
+            'Brightness',
+            s.brightness,
+            (v) => _setAdjustment((x) => x.copyWith(brightness: v)),
+            () => _render(_index),
+          ),
+          _tuneSlider(
+            colors,
+            'Contrast',
+            s.contrast,
+            (v) => _setAdjustment((x) => x.copyWith(contrast: v)),
+            () => _render(_index),
+          ),
+          _tuneSlider(
+            colors,
+            'Saturation',
+            s.saturation,
+            (v) => _setAdjustment((x) => x.copyWith(saturation: v)),
+            () => _render(_index),
+          ),
+          Align(
+            alignment: Alignment.centerRight,
+            child: TextButton.icon(
+              onPressed: _saving ? null : _resetAdjustments,
+              icon: const Icon(Icons.restart_alt_rounded, size: 16),
+              label: const Text('Reset'),
+              style: TextButton.styleFrom(
+                foregroundColor: colors.headingTextColor.withValues(alpha: 0.75),
+                padding: const EdgeInsets.symmetric(horizontal: 8),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _tuneSlider(
+    CustomAppColors colors,
+    String label,
+    int value,
+    ValueChanged<int> onChanged,
+    VoidCallback onCommit,
+  ) {
+    return Row(
+      children: [
+        SizedBox(
+          width: 76,
+          child: Text(
+            label,
+            style: TextStyle(
+              color: colors.headingTextColor.withValues(alpha: 0.7),
+              fontSize: 12.5,
+            ),
+          ),
+        ),
+        Expanded(
+          child: Slider(
+            value: value.toDouble(),
+            min: -100,
+            max: 100,
+            divisions: 200,
+            activeColor: colors.buttonColor,
+            inactiveColor: colors.borderColor,
+            onChanged: _saving ? null : (v) => onChanged(v.round()),
+            onChangeEnd: _saving ? null : (_) => onCommit(),
+          ),
+        ),
+        SizedBox(
+          width: 42,
+          child: Text(
+            value == 0 ? '0' : value > 0 ? '+$value' : '$value',
+            textAlign: TextAlign.right,
+            style: TextStyle(
+              color: value == 0
+                  ? colors.headingTextColor.withValues(alpha: 0.55)
+                  : colors.buttonColor,
+              fontSize: 12.5,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ),
+      ],
     );
   }
 
@@ -365,7 +499,10 @@ class _EnhanceScreenState extends State<EnhanceScreen> {
               padding: const EdgeInsets.only(bottom: 10),
               child: Text(
                 _presetDescriptions[_page.settings.filter] ?? '',
-                style: const TextStyle(color: Colors.white54, fontSize: 12),
+                style: TextStyle(
+                  color: colors.headingTextColor.withValues(alpha: 0.55),
+                  fontSize: 12,
+                ),
                 textAlign: TextAlign.center,
               ),
             ),
@@ -374,8 +511,8 @@ class _EnhanceScreenState extends State<EnhanceScreen> {
                 Expanded(
                   child: OutlinedButton(
                     style: OutlinedButton.styleFrom(
-                      foregroundColor: Colors.white,
-                      side: const BorderSide(color: Colors.white54),
+                      foregroundColor: colors.headingTextColor,
+                      side: BorderSide(color: colors.borderColor),
                       padding: const EdgeInsets.symmetric(vertical: 14),
                     ),
                     onPressed: _saving ? null : () => Navigator.of(context).pop(),

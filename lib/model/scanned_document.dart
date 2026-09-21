@@ -1,14 +1,18 @@
+import '../controller/fileType.dart';
+
 class ScannedDocument {
   final String id;
   final String title;
   final DateTime createdAt;
   final List<String> pagePaths; // private app storage — reliable for display
+  final FileType type;
 
   const ScannedDocument({
     required this.id,
     required this.title,
     required this.createdAt,
     required this.pagePaths,
+    this.type = FileType.image,
   });
 
   Map<String, dynamic> toJson() => {
@@ -16,6 +20,7 @@ class ScannedDocument {
         'title': title,
         'createdAt': createdAt.toIso8601String(),
         'pagePaths': pagePaths,
+        'type': type.name,
       };
 
   factory ScannedDocument.fromJson(Map<String, dynamic> json) => ScannedDocument(
@@ -23,5 +28,6 @@ class ScannedDocument {
         title: json['title'] as String,
         createdAt: DateTime.parse(json['createdAt'] as String),
         pagePaths: (json['pagePaths'] as List).cast<String>(),
+        type: FileType.values.asNameMap()[json['type']] ?? FileType.image,
       );
 }
