@@ -9,6 +9,7 @@ import 'package:image_cropper/image_cropper.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:path_provider/path_provider.dart';
 import '../services/scan_service.dart';
+import '../services/document_segmenter.dart';
 import '../theme/app_theme.dart';
 import 'camera_pervious_screen.dart';
 import 'crop_review_screen.dart';
@@ -54,11 +55,17 @@ class _CustomCameraScreenState extends State<CustomCameraScreen> with WidgetsBin
   final AutoCaptureAnalyzer _autoCapture = AutoCaptureAnalyzer(
     requiredSteadyFrames: 7, // ~0.7 s of held position at ~10 fps detection
     minConfidence: 0.45,
-    minArea: 0.12,
+    minArea: 0.04,
     maxJitter: 0.08,
   );
   AutoCaptureState _autoCaptureState = const AutoCaptureState(status: AutoCaptureStatus.searching);
   bool _autoCaptureOn = true;
+
+  // Optional ONNX segmentation fallback: when the native detector misses, the
+  // model draws a pixel mask that is converted back to corners. The model is
+  // lazy-loaded (and stays unavailable when the asset is missing) so the common
+  // path has zero overhead.
+  final DocumentSegmenter _segmenter = DocumentSegmenter();
 
   // Set while the user is retaking a specific page from the review screen —
   // the next capture replaces that page instead of appending a new one.
@@ -75,6 +82,7 @@ class _CustomCameraScreenState extends State<CustomCameraScreen> with WidgetsBin
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     unawaited(_teardownDetection());
+    unawaited(_segmenter.dispose());
     _thumbnailsController.dispose();
     super.dispose();
   }
@@ -146,6 +154,7 @@ class _CustomCameraScreenState extends State<CustomCameraScreen> with WidgetsBin
           frames.stream,
           stabilize: CornerStabilizer(),
           minInterval: const Duration(milliseconds: 100),
+          sensitivity: DetectionSensitivity.lenient,
         )
         .listen(_onDetectionEvent);
 
@@ -372,11 +381,50 @@ class _CustomCameraScreenState extends State<CustomCameraScreen> with WidgetsBin
 
   /// Tries to auto-detect and crop the document in the captured still. Returns
   /// the path of the cropped image, or `null` to keep the original if no
-  /// document-like rectangle was found (or the crop failed).
+  /// document-like rectangle was found (or the crop failed). A weak native
+  /// result (below a platform confidence threshold) is re-checked with the
+  /// optional ONNX segmentation model, which may replace or confirm the quad
+  /// before the perspective warp.
   Future<String?> _autoCrop(String sourcePath) async {
+    const iosConfidenceThreshold = 0.5;
+    const androidConfidenceThreshold = 0.7;
+    const agreementThreshold = 0.08;
+
     try {
+      final input = ScanInput.file(sourcePath);
+
+      var corners = await _scanner.detectCorners(
+        input,
+        sensitivity: DetectionSensitivity.lenient,
+      );
+
+      final threshold = Platform.isIOS
+          ? iosConfidenceThreshold
+          : androidConfidenceThreshold;
+      final weak = corners == null || (corners.confidence ?? 0) < threshold;
+
+      if (weak) {
+        if (await _segmenter.load()) {
+          final bytes = await File(sourcePath).readAsBytes();
+          final onnxCorners = await _segmenter.detect(bytes);
+
+          if (onnxCorners != null) {
+            if (corners == null) {
+              corners = onnxCorners;
+            } else if (_cornerDistance(corners, onnxCorners) >= agreementThreshold) {
+              corners = (onnxCorners.confidence ?? 0) > (corners.confidence ?? 0)
+                  ? onnxCorners
+                  : corners;
+            }
+          }
+        }
+      }
+
+      if (corners == null) return null;
+
       final scan = await _scanner.scan(
-        ScanInput.file(sourcePath),
+        input,
+        corners: corners,
         output: const ScanOutputFormat.jpegAt(92),
         maxDimension: 2400,
       );
@@ -1375,6 +1423,21 @@ class _PageThumbnail extends StatelessWidget {
 //     );
 //   }
 // }
+
+/// Mean per-corner distance between two quads in normalized units (0..1 image
+/// space). Used by [_CustomCameraScreenState._autoCrop] to decide whether the
+/// ONNX corners meaningfully disagree with the native ones before trusting
+/// either.
+double _cornerDistance(DocumentCorners a, DocumentCorners b) {
+  final pa = a.toList(), pb = b.toList();
+  var sum = 0.0;
+  for (var i = 0; i < 4; i++) {
+    sum += math.sqrt(
+      math.pow(pa[i].x - pb[i].x, 2) + math.pow(pa[i].y - pb[i].y, 2),
+    );
+  }
+  return sum / 4;
+}
 
 
 
