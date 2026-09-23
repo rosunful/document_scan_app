@@ -4,21 +4,30 @@ import 'dart:math' as math;
 import 'package:camera/camera.dart';
 import 'package:document_scan/document_scan.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
-import 'package:image_cropper/image_cropper.dart';
 import 'package:image_picker/image_picker.dart';
-import 'package:path_provider/path_provider.dart';
 import '../services/scan_service.dart';
-import '../services/document_segmenter.dart';
 import '../theme/app_theme.dart';
+import 'batch_crop_screen.dart';
 import 'camera_pervious_screen.dart';
-import 'crop_review_screen.dart';
 
 enum _ScreenState { loading, ready, error }
 
-/// Custom document-capture camera. Pops with a `List<String>` of captured
-/// page file paths when the user taps Done, or `null` if they cancel
-/// without capturing anything.
+/// Result of the capture flow. [crops] are the batch-cropped final pages (safe
+/// to feed PDF/OCR flows), and [origins] are the untouched raw captures — kept
+/// index-aligned so the preview screen can re-crop a page back from the true
+/// original photo when a previous crop went too far. The receiver of this
+/// result owns cleanup of every file.
+class ScanPageSet {
+  final List<String> origins;
+  final List<String> crops;
+
+  const ScanPageSet({required this.origins, required this.crops});
+}
+
+/// Custom document-capture camera. Every captured photo is collected raw into
+/// a single group — no per-photo crop or enhancement — and the crop review runs
+/// only when the user taps Done. Pops with a [ScanPageSet], or `null` if they
+/// cancel without capturing anything.
 class CustomCameraScreen extends StatefulWidget {
   const CustomCameraScreen({super.key});
 
@@ -26,19 +35,27 @@ class CustomCameraScreen extends StatefulWidget {
   State<CustomCameraScreen> createState() => _CustomCameraScreenState();
 }
 
-class _CustomCameraScreenState extends State<CustomCameraScreen> with WidgetsBindingObserver {
+class _CustomCameraScreenState extends State<CustomCameraScreen>
+    with WidgetsBindingObserver {
   final ImagePicker _picker = ImagePicker();
 
   final DocumentDetector _detector = DocumentDetector();
-  final DocumentScanner _scanner = DocumentScanner();
 
   CameraController? _controller;
   _ScreenState _state = _ScreenState.loading;
   String _errorMessage = '';
   bool _torchOn = false;
   bool _isCapturing = false;
+  bool _processing = false;
   final List<String> _capturedPages = [];
   final ScrollController _thumbnailsController = ScrollController();
+
+  // Thumbnail strip navigation: arrows page through the strip five thumbnails
+  // at a time; finger swiping still works.
+  static const int _thumbnailsPerPage = 5;
+  static const double _thumbnailExtent = 52; // 44 wide + 8 right padding
+  bool _thumbnailsCanPrev = false;
+  bool _thumbnailsCanNext = false;
 
   // Realtime detection pipeline: the camera's image stream is drained by
   // detectStream, which emits a DetectionEvent per handled frame. Each success
@@ -48,25 +65,6 @@ class _CustomCameraScreenState extends State<CustomCameraScreen> with WidgetsBin
   DocumentCorners? _corners;
   bool _detectionStarted = false;
 
-  // Auto-capture: watches the smoothed detection stream and fires a capture
-  // once the document has been held steady and confident for ~0.7 s. Latch
-  // semantics give one capture per hold (the document must move to re-arm).
-  // `_autoCaptureState` is the latest frame's analysis, used in the status text.
-  final AutoCaptureAnalyzer _autoCapture = AutoCaptureAnalyzer(
-    requiredSteadyFrames: 7, // ~0.7 s of held position at ~10 fps detection
-    minConfidence: 0.45,
-    minArea: 0.04,
-    maxJitter: 0.08,
-  );
-  AutoCaptureState _autoCaptureState = const AutoCaptureState(status: AutoCaptureStatus.searching);
-  bool _autoCaptureOn = true;
-
-  // Optional ONNX segmentation fallback: when the native detector misses, the
-  // model draws a pixel mask that is converted back to corners. The model is
-  // lazy-loaded (and stays unavailable when the asset is missing) so the common
-  // path has zero overhead.
-  final DocumentSegmenter _segmenter = DocumentSegmenter();
-
   // Set while the user is retaking a specific page from the review screen —
   // the next capture replaces that page instead of appending a new one.
   int? _retakeIndex;
@@ -75,6 +73,7 @@ class _CustomCameraScreenState extends State<CustomCameraScreen> with WidgetsBin
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _thumbnailsController.addListener(_onThumbnailsScroll);
     _setup();
   }
 
@@ -82,8 +81,9 @@ class _CustomCameraScreenState extends State<CustomCameraScreen> with WidgetsBin
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     unawaited(_teardownDetection());
-    unawaited(_segmenter.dispose());
-    _thumbnailsController.dispose();
+    _thumbnailsController
+      ..removeListener(_onThumbnailsScroll)
+      ..dispose();
     super.dispose();
   }
 
@@ -133,7 +133,8 @@ class _CustomCameraScreenState extends State<CustomCameraScreen> with WidgetsBin
     } catch (_) {
       if (!mounted) return;
       setState(() {
-        _errorMessage = 'Could not open the camera. Check that permission is granted.';
+        _errorMessage =
+            'Could not open the camera. Check that permission is granted.';
         _state = _ScreenState.error;
       });
     }
@@ -145,7 +146,6 @@ class _CustomCameraScreenState extends State<CustomCameraScreen> with WidgetsBin
   Future<void> _startDetection(CameraController controller) async {
     if (_detectionStarted) return;
     _detectionStarted = true;
-    _autoCapture.reset();
     final frames = StreamController<ScanInput>();
     _frames = frames;
 
@@ -196,7 +196,6 @@ class _CustomCameraScreenState extends State<CustomCameraScreen> with WidgetsBin
       // Ignore — the controller may already be torn down.
     }
     await controller?.dispose();
-    _autoCapture.reset();
     if (mounted) {
       setState(() {
         _controller = null;
@@ -250,16 +249,6 @@ class _CustomCameraScreenState extends State<CustomCameraScreen> with WidgetsBin
       case DetectionError():
         break; // keep the last quad; a transient frame error isn't fatal
     }
-
-    // Stability/auto-capture: the analyzer counts consecutive qualifying and
-    // steady frames, and fires exactly once per hold (latched until the
-    // document moves). `_capture()` disarms it on the way out.
-    _autoCaptureState = _autoCapture.addEvent(event);
-    if (_autoCaptureOn &&
-        _state == _ScreenState.ready &&
-        _autoCaptureState.shouldCapture) {
-      _capture();
-    }
   }
 
   Future<void> _toggleTorch() async {
@@ -274,19 +263,9 @@ class _CustomCameraScreenState extends State<CustomCameraScreen> with WidgetsBin
     }
   }
 
-  /// Flips the auto-capture mode. Turning it on re-arms the stability
-  /// analyzer from a clean state.
-  void _toggleAutoCapture() {
-    setState(() {
-      _autoCaptureOn = !_autoCaptureOn;
-      _autoCapture.reset();
-      _autoCaptureState = const AutoCaptureState(status: AutoCaptureStatus.searching);
-    });
-  }
-
-  /// Status line under the preview, driven by capture phase, detection and
-  /// the auto-capture analyzer's progress.
+  /// Status line under the preview, driven by capture phase and detection.
   String get _statusMessage {
+    if (_processing) return 'Processing pages…';
     if (_retakeIndex != null) {
       return 'Retaking page ${_retakeIndex! + 1} — capture to replace it';
     }
@@ -296,74 +275,49 @@ class _CustomCameraScreenState extends State<CustomCameraScreen> with WidgetsBin
           ? 'Align document in frame'
           : '${_capturedPages.length} page${_capturedPages.length == 1 ? '' : 's'} captured';
     }
-    if (!_autoCaptureOn) return 'Hold steady — document detected';
-    if (_autoCaptureState.shouldCapture) return 'Capturing…';
-    if (_autoCaptureState.steadyFrames > 0) {
-      return 'Hold steady — capturing automatically';
-    }
     return 'Document detected';
   }
 
   Future<void> _capture() async {
     final controller = _controller;
-    if (controller == null || !controller.value.isInitialized || _isCapturing) return;
+    if (controller == null || !controller.value.isInitialized || _isCapturing) {
+      return;
+    }
+    if (_processing) return;
     setState(() => _isCapturing = true);
     try {
       final file = await controller.takePicture();
-      final autoCropPath = await _autoCrop(file.path);
 
       if (!mounted) {
         _deleteTempFile(file.path);
-        _deleteTempFile(autoCropPath);
         return;
       }
 
-      // Show the auto-detected crop so the user can accept it ("Use this") or
-      // fall back to dragging the corners themselves ("Adjust manually").
-      // Backing out means retake — nothing gets added to this scan.
-      final pagePath = await Navigator.of(context).push<String>(
-        MaterialPageRoute(
-          builder: (_) => CropReviewScreen(
-            sourcePath: file.path,
-            autoCropPath: autoCropPath,
-          ),
-        ),
-      );
-      if (!mounted) {
-        _deleteTempFile(file.path);
-        _deleteTempFile(autoCropPath);
-        return;
-      }
-      if (pagePath == null) {
-        _deleteTempFile(file.path);
-        _deleteTempFile(autoCropPath);
-        return;
-      }
-
-      // The original full frame is only kept when the user chose it as-is.
-      if (pagePath != file.path) _deleteTempFile(file.path);
-
+      // Collect the raw still into the group. Cropping/enhancement happens
+      // later, on Done, for the whole batch at once.
       setState(() {
         final retakeIndex = _retakeIndex;
         if (retakeIndex != null) {
-          _capturedPages.insert(retakeIndex.clamp(0, _capturedPages.length), pagePath);
+          final index = retakeIndex.clamp(0, _capturedPages.length);
+          if (index < _capturedPages.length) {
+            _deleteTempFile(_capturedPages[index]);
+          }
+          _capturedPages.insert(index, file.path);
           _retakeIndex = null;
         } else {
-          _capturedPages.add(pagePath);
+          _capturedPages.add(file.path);
         }
       });
     } catch (_) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Could not capture the photo. Try again.')),
+          const SnackBar(
+            content: Text('Could not capture the photo. Try again.'),
+          ),
         );
       }
     } finally {
       if (mounted) setState(() => _isCapturing = false);
-      // Whether auto-fired or manual, the document currently held must move
-      // before another capture is triggered — otherwise a still-held page
-      // would be re-captured a second time after the crop review closes.
-      _autoCapture.disarm();
     }
   }
 
@@ -379,102 +333,21 @@ class _CustomCameraScreenState extends State<CustomCameraScreen> with WidgetsBin
     }
   }
 
-  /// Tries to auto-detect and crop the document in the captured still. Returns
-  /// the path of the cropped image, or `null` to keep the original if no
-  /// document-like rectangle was found (or the crop failed). A weak native
-  /// result (below a platform confidence threshold) is re-checked with the
-  /// optional ONNX segmentation model, which may replace or confirm the quad
-  /// before the perspective warp.
-  Future<String?> _autoCrop(String sourcePath) async {
-    const iosConfidenceThreshold = 0.5;
-    const androidConfidenceThreshold = 0.7;
-    const agreementThreshold = 0.08;
-
-    try {
-      final input = ScanInput.file(sourcePath);
-
-      var corners = await _scanner.detectCorners(
-        input,
-        sensitivity: DetectionSensitivity.lenient,
-      );
-
-      final threshold = Platform.isIOS
-          ? iosConfidenceThreshold
-          : androidConfidenceThreshold;
-      final weak = corners == null || (corners.confidence ?? 0) < threshold;
-
-      if (weak) {
-        if (await _segmenter.load()) {
-          final bytes = await File(sourcePath).readAsBytes();
-          final onnxCorners = await _segmenter.detect(bytes);
-
-          if (onnxCorners != null) {
-            if (corners == null) {
-              corners = onnxCorners;
-            } else if (_cornerDistance(corners, onnxCorners) >= agreementThreshold) {
-              corners = (onnxCorners.confidence ?? 0) > (corners.confidence ?? 0)
-                  ? onnxCorners
-                  : corners;
-            }
-          }
-        }
-      }
-
-      if (corners == null) return null;
-
-      final scan = await _scanner.scan(
-        input,
-        corners: corners,
-        output: const ScanOutputFormat.jpegAt(92),
-        maxDimension: 2400,
-      );
-      if (scan == null) return null;
-
-      final dir = await getTemporaryDirectory();
-      final out = File('${dir.path}/scan_${DateTime.now().microsecondsSinceEpoch}.jpg');
-      await out.writeAsBytes(scan.bytes, flush: true);
-      return out.path;
-    } catch (_) {
-      return null; // fall back to the original photo
-    }
-  }
-
-  /// Opens the gallery, then hands the picked photo straight to the crop
-  /// screen. Image enhancement (B&W, contrast, etc.) is a later step —
-  /// cropping is all we do here for now.
+  /// Opens the gallery and adds the picked photo to the capture group. Photos
+  /// are collected raw here and go through the same crop review as camera
+  /// shots when Done is tapped — no immediate cropping or enhancement.
   Future<void> _pickFromGallery() async {
-    final colors = context.myAppColors;
     try {
-      final picked = await _picker.pickImage(source: ImageSource.gallery, imageQuality: 95);
-      if (picked == null || !mounted) return; // user cancelled the picker
-
-      final cropped = await ImageCropper().cropImage(
-        sourcePath: picked.path,
-        compressQuality: 90,
-        uiSettings: [
-          AndroidUiSettings(
-            toolbarTitle: 'Crop Document',
-            toolbarColor: colors.cardColor,
-            toolbarWidgetColor: colors.headingTextColor,
-            activeControlsWidgetColor: colors.buttonColor,
-            backgroundColor: colors.backgroundColor,
-            lockAspectRatio: false,
-          ),
-          IOSUiSettings(
-            title: 'Crop Document',
-            doneButtonTitle: 'Done',
-            cancelButtonTitle: 'Cancel',
-            aspectRatioLockEnabled: false,
-          ),
-        ],
+      final picked = await _picker.pickImage(
+        source: ImageSource.gallery,
+        imageQuality: 95,
       );
-
-      if (cropped == null || !mounted) return; // user cancelled the crop
-      setState(() => _capturedPages.add(cropped.path));
-    } on PlatformException catch (e) {
+      if (picked == null || !mounted) return; // user cancelled the picker
+      setState(() => _capturedPages.add(picked.path));
+    } catch (_) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(e.message ?? 'Could not access your photos.')),
+          const SnackBar(content: Text('Could not access your photos.')),
         );
       }
     }
@@ -485,7 +358,10 @@ class _CustomCameraScreenState extends State<CustomCameraScreen> with WidgetsBin
   Future<void> _openPageReview(int index) async {
     final result = await Navigator.of(context).push<ReviewResult>(
       MaterialPageRoute(
-        builder: (_) => PageReviewScreen(imagePaths: List.of(_capturedPages), initialIndex: index),
+        builder: (_) => PageReviewScreen(
+          imagePaths: List.of(_capturedPages),
+          initialIndex: index,
+        ),
         fullscreenDialog: true,
       ),
     );
@@ -512,15 +388,90 @@ class _CustomCameraScreenState extends State<CustomCameraScreen> with WidgetsBin
     });
   }
 
-  void _finish() => Navigator.of(context).pop(List<String>.from(_capturedPages));
+  void _onThumbnailsScroll() {
+    if (!_thumbnailsController.hasClients) return;
+    final position = _thumbnailsController.position;
+    final canPrev = position.pixels > 0.01;
+    final canNext = position.pixels < position.maxScrollExtent - 0.01;
+    if (canPrev == _thumbnailsCanPrev && canNext == _thumbnailsCanNext) return;
+    setState(() {
+      _thumbnailsCanPrev = canPrev;
+      _thumbnailsCanNext = canNext;
+    });
+  }
+
+  /// Scrolls the thumbnail strip one page of [_thumbnailsPerPage] items.
+  void _pageThumbnails(bool forward) {
+    if (!_thumbnailsController.hasClients) return;
+    final position = _thumbnailsController.position;
+    final delta = _thumbnailExtent * _thumbnailsPerPage;
+    final target = forward
+        ? (position.pixels + delta).clamp(0.0, position.maxScrollExtent)
+        : (position.pixels - delta).clamp(0.0, position.maxScrollExtent);
+    _thumbnailsController.animateTo(
+      target,
+      duration: const Duration(milliseconds: 300),
+      curve: Curves.easeOut,
+    );
+  }
+
+  /// Runs the batch crop review for the captured pages. Every page shows in
+  /// the paged [BatchCropScreen] (swipe/tap dots to switch, drag corners,
+  /// Apply crops and advances immediately, Apply All skips the review). A
+  /// cancelled review (`null`) keeps the raw collection intact and returns to
+  /// the camera; completing it pops a [ScanPageSet] with the processed pages
+  /// and the untouched raws (kept so the preview screen can re-crop a page
+  /// back from the true original capture).
+  Future<void> _finish() async {
+    final pages = List<String>.from(_capturedPages);
+    if (pages.isEmpty || _processing) return;
+
+    setState(() => _processing = true);
+    List<String>? processed;
+    try {
+      processed = await Navigator.of(context).push<List<String>>(
+        MaterialPageRoute(builder: (_) => BatchCropScreen(sourcePaths: pages)),
+      );
+      if (!mounted) return;
+    } finally {
+      if (mounted) setState(() => _processing = false);
+    }
+
+    if (processed == null) return; // cancelled — keep the raw group
+    final origins = List<String>.from(pages);
+    _capturedPages
+      ..clear()
+      ..addAll(processed);
+    if (mounted) {
+      Navigator.of(
+        context,
+      ).pop(ScanPageSet(origins: origins, crops: processed));
+    }
+  }
 
   void _cancel() {
-    Navigator.of(context).pop(_capturedPages.isEmpty ? null : _capturedPages);
+    if (_capturedPages.isEmpty) {
+      Navigator.of(context).pop();
+      return;
+    }
+    Navigator.of(context).pop(
+      ScanPageSet(
+        origins: List<String>.from(_capturedPages),
+        crops: List<String>.from(_capturedPages),
+      ),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
     final colors = context.myAppColors;
+
+    // Keep the thumbnail chevrons in sync after every layout — the scroll
+    // listener alone only fires once the user drags the strip, leaving the
+    // arrows dormant until then.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _onThumbnailsScroll();
+    });
 
     return PopScope(
       canPop: false,
@@ -531,7 +482,9 @@ class _CustomCameraScreenState extends State<CustomCameraScreen> with WidgetsBin
         backgroundColor: colors.backgroundColor,
         body: SafeArea(
           child: switch (_state) {
-            _ScreenState.loading => const Center(child: CircularProgressIndicator()),
+            _ScreenState.loading => const Center(
+              child: CircularProgressIndicator(),
+            ),
             _ScreenState.error => _buildError(colors),
             _ScreenState.ready => _buildCamera(colors),
           },
@@ -546,7 +499,11 @@ class _CustomCameraScreenState extends State<CustomCameraScreen> with WidgetsBin
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          Icon(Icons.no_photography_rounded, color: colors.descriptionColor, size: 48),
+          Icon(
+            Icons.no_photography_rounded,
+            color: colors.descriptionColor,
+            size: 48,
+          ),
           const SizedBox(height: 16),
           Text(
             _errorMessage,
@@ -559,11 +516,17 @@ class _CustomCameraScreenState extends State<CustomCameraScreen> with WidgetsBin
             children: [
               TextButton(
                 onPressed: () => Navigator.of(context).pop(),
-                child: Text('Cancel', style: TextStyle(color: colors.descriptionColor)),
+                child: Text(
+                  'Cancel',
+                  style: TextStyle(color: colors.descriptionColor),
+                ),
               ),
               const SizedBox(width: 12),
               ElevatedButton(
-                style: ElevatedButton.styleFrom(backgroundColor: colors.buttonColor, foregroundColor: Colors.white),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: colors.buttonColor,
+                  foregroundColor: Colors.white,
+                ),
                 onPressed: _setup,
                 child: const Text('Try Again'),
               ),
@@ -579,34 +542,32 @@ class _CustomCameraScreenState extends State<CustomCameraScreen> with WidgetsBin
 
     return Column(
       children: [
-        // Top bar: close, title, auto-capture toggle, flash toggle.
+        // Top bar: close, title, flash toggle.
         Padding(
           padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
           child: Row(
             children: [
-              _RoundIconButton(icon: Icons.close_rounded, onTap: _cancel, colors: colors),
+              _RoundIconButton(
+                icon: Icons.close_rounded,
+                onTap: _cancel,
+                colors: colors,
+              ),
               Expanded(
                 child: Text(
                   'Scan Document',
                   textAlign: TextAlign.center,
-                  style: TextStyle(color: colors.headingTextColor, fontWeight: FontWeight.w700, fontSize: 15),
-                ),
-              ),
-              Tooltip(
-                message: _autoCaptureOn
-                    ? 'Auto-capture on — tap to turn off'
-                    : 'Auto-capture off — tap to turn on',
-                child: _RoundIconButton(
-                  icon: Icons.my_location_rounded,
-                  onTap: _toggleAutoCapture,
-                  colors: colors,
-                  active: _autoCaptureOn,
-                  activeColor: colors.buttonColor,
+                  style: TextStyle(
+                    color: colors.headingTextColor,
+                    fontWeight: FontWeight.w700,
+                    fontSize: 15,
+                  ),
                 ),
               ),
               const SizedBox(width: 8),
               _RoundIconButton(
-                icon: _torchOn ? Icons.flash_on_rounded : Icons.flash_off_rounded,
+                icon: _torchOn
+                    ? Icons.flash_on_rounded
+                    : Icons.flash_off_rounded,
                 onTap: _toggleTorch,
                 colors: colors,
               ),
@@ -656,37 +617,66 @@ class _CustomCameraScreenState extends State<CustomCameraScreen> with WidgetsBin
               ),
               if (_capturedPages.isNotEmpty) ...[
                 const SizedBox(height: 12),
-                SizedBox(
-                  height: 64,
-                  child: Scrollbar(
-                    controller: _thumbnailsController,
-                    thumbVisibility: true,
-                    scrollbarOrientation: ScrollbarOrientation.bottom,
-                    thickness: 4,
-                    radius: const Radius.circular(2),
-                    child: ReorderableListView.builder(
-                      scrollDirection: Axis.horizontal,
-                      scrollController: _thumbnailsController,
-                      buildDefaultDragHandles: false,
-                      padding: const EdgeInsets.symmetric(horizontal: 24),
-                      onReorder: _reorderPages,
-                      itemCount: _capturedPages.length,
-                      itemBuilder: (context, i) {
-                        final path = _capturedPages[i];
-                        return ReorderableDragStartListener(
-                          key: ValueKey(path),
-                          index: i,
-                          child: Padding(
-                            padding: const EdgeInsets.only(right: 8),
-                            child: _PageThumbnail(
-                              path: path,
-                              onTap: () => _openPageReview(i),
-                              onRemove: () => _removePage(i),
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 12),
+                  child: Row(
+                    children: [
+                      _RoundIconButton(
+                        icon: Icons.chevron_left_rounded,
+                        onTap: _thumbnailsCanPrev
+                            ? () => _pageThumbnails(false)
+                            : null,
+                        colors: colors,
+                        size: 36,
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: SizedBox(
+                          height: 64,
+                          child: Scrollbar(
+                            controller: _thumbnailsController,
+                            thumbVisibility: true,
+                            scrollbarOrientation: ScrollbarOrientation.bottom,
+                            thickness: 4,
+                            radius: const Radius.circular(2),
+                            child: ReorderableListView.builder(
+                              scrollDirection: Axis.horizontal,
+                              scrollController: _thumbnailsController,
+                              buildDefaultDragHandles: false,
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 4,
+                              ),
+                              onReorder: _reorderPages,
+                              itemCount: _capturedPages.length,
+                              itemBuilder: (context, i) {
+                                final path = _capturedPages[i];
+                                return ReorderableDragStartListener(
+                                  key: ValueKey(path),
+                                  index: i,
+                                  child: Padding(
+                                    padding: const EdgeInsets.only(right: 8),
+                                    child: _PageThumbnail(
+                                      path: path,
+                                      onTap: () => _openPageReview(i),
+                                      onRemove: () => _removePage(i),
+                                    ),
+                                  ),
+                                );
+                              },
                             ),
                           ),
-                        );
-                      },
-                    ),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      _RoundIconButton(
+                        icon: Icons.chevron_right_rounded,
+                        onTap: _thumbnailsCanNext
+                            ? () => _pageThumbnails(true)
+                            : null,
+                        colors: colors,
+                        size: 36,
+                      ),
+                    ],
                   ),
                 ),
               ],
@@ -704,33 +694,46 @@ class _CustomCameraScreenState extends State<CustomCameraScreen> with WidgetsBin
                 width: 56,
                 child: _capturedPages.isNotEmpty
                     ? TextButton(
-                        onPressed: _finish,
+                        onPressed: _processing ? null : _finish,
                         child: Text(
                           'Done',
-                          style: TextStyle(color: colors.buttonColor, fontWeight: FontWeight.w700),
+                          style: TextStyle(
+                            color: colors.buttonColor,
+                            fontWeight: FontWeight.w700,
+                          ),
                         ),
                       )
                     : const SizedBox.shrink(),
               ),
               GestureDetector(
-                onTap: _isCapturing ? null : _capture,
+                onTap: _isCapturing || _processing ? null : _capture,
                 child: Container(
                   width: 76,
                   height: 76,
                   decoration: BoxDecoration(
                     shape: BoxShape.circle,
-                    border: Border.all(color: colors.buttonColor.withValues(alpha: 0.45), width: 3),
+                    border: Border.all(
+                      color: colors.buttonColor.withValues(alpha: 0.45),
+                      width: 3,
+                    ),
                   ),
                   padding: const EdgeInsets.all(5),
                   child: DecoratedBox(
                     decoration: BoxDecoration(
                       shape: BoxShape.circle,
-                      color: _isCapturing ? colors.descriptionColor : colors.buttonColor,
+                      color: _isCapturing
+                          ? colors.descriptionColor
+                          : colors.buttonColor,
                     ),
                   ),
                 ),
               ),
-              _RoundIconButton(icon: Icons.photo_library_rounded, onTap: _pickFromGallery, colors: colors, size: 48),
+              _RoundIconButton(
+                icon: Icons.photo_library_rounded,
+                onTap: _processing ? null : _pickFromGallery,
+                colors: colors,
+                size: 48,
+              ),
             ],
           ),
         ),
@@ -745,7 +748,9 @@ class _CornerGuides extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return const IgnorePointer(child: CustomPaint(painter: _CornerGuidesPainter()));
+    return const IgnorePointer(
+      child: CustomPaint(painter: _CornerGuidesPainter()),
+    );
   }
 }
 
@@ -792,7 +797,11 @@ class _CornerGuidesPainter extends CustomPainter {
     final inner = Offset(w / 2, h / 2);
     final radius = math.min(w, h) * 0.42;
     canvas.drawCircle(inner, radius, flash);
-    canvas.drawLine(inner.translate(-radius, 0), inner.translate(radius, 0), flash..strokeWidth = 1.2);
+    canvas.drawLine(
+      inner.translate(-radius, 0),
+      inner.translate(radius, 0),
+      flash..strokeWidth = 1.2,
+    );
   }
 
   @override
@@ -865,8 +874,14 @@ class _DetectionOverlayPainter extends CustomPainter {
 
     final tl = Offset(c.topLeft.x * size.width, c.topLeft.y * size.height);
     final tr = Offset(c.topRight.x * size.width, c.topRight.y * size.height);
-    final br = Offset(c.bottomRight.x * size.width, c.bottomRight.y * size.height);
-    final bl = Offset(c.bottomLeft.x * size.width, c.bottomLeft.y * size.height);
+    final br = Offset(
+      c.bottomRight.x * size.width,
+      c.bottomRight.y * size.height,
+    );
+    final bl = Offset(
+      c.bottomLeft.x * size.width,
+      c.bottomLeft.y * size.height,
+    );
 
     final path = Path()
       ..moveTo(tl.dx, tl.dy)
@@ -895,22 +910,16 @@ class _RoundIconButton extends StatelessWidget {
   final CustomAppColors colors;
   final double size;
 
-  /// When set, fills the button with [activeColor] (and renders the icon white)
-  /// so on/off states read at a glance.
-  final bool active;
-  final Color activeColor;
-
   const _RoundIconButton({
     required this.icon,
     required this.onTap,
     required this.colors,
     this.size = 40,
-    this.active = false,
-    this.activeColor = const Color(0xFF129D7C),
   });
 
   @override
   Widget build(BuildContext context) {
+    final enabled = onTap != null;
     return GestureDetector(
       onTap: onTap,
       child: Container(
@@ -918,12 +927,12 @@ class _RoundIconButton extends StatelessWidget {
         height: size,
         decoration: BoxDecoration(
           shape: BoxShape.circle,
-          color: active ? activeColor : colors.cardColor,
-          border: Border.all(color: active ? activeColor : colors.borderColor),
+          color: enabled ? colors.cardColor : colors.borderColor,
+          border: Border.all(color: colors.borderColor),
         ),
         child: Icon(
           icon,
-          color: active ? Colors.white : colors.headingTextColor,
+          color: enabled ? colors.headingTextColor : colors.descriptionColor,
           size: size * 0.48,
         ),
       ),
@@ -936,7 +945,11 @@ class _PageThumbnail extends StatelessWidget {
   final VoidCallback onTap;
   final VoidCallback onRemove;
 
-  const _PageThumbnail({required this.path, required this.onTap, required this.onRemove});
+  const _PageThumbnail({
+    required this.path,
+    required this.onTap,
+    required this.onRemove,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -947,7 +960,12 @@ class _PageThumbnail extends StatelessWidget {
           onTap: onTap,
           child: ClipRRect(
             borderRadius: BorderRadius.circular(8),
-            child: Image.file(File(path), width: 44, height: 56, fit: BoxFit.cover),
+            child: Image.file(
+              File(path),
+              width: 44,
+              height: 56,
+              fit: BoxFit.cover,
+            ),
           ),
         ),
         Positioned(
@@ -958,8 +976,15 @@ class _PageThumbnail extends StatelessWidget {
             child: Container(
               width: 18,
               height: 18,
-              decoration: const BoxDecoration(shape: BoxShape.circle, color: Colors.black87),
-              child: const Icon(Icons.close_rounded, size: 12, color: Colors.white),
+              decoration: const BoxDecoration(
+                shape: BoxShape.circle,
+                color: Colors.black87,
+              ),
+              child: const Icon(
+                Icons.close_rounded,
+                size: 12,
+                color: Colors.white,
+              ),
             ),
           ),
         ),
@@ -967,16 +992,6 @@ class _PageThumbnail extends StatelessWidget {
     );
   }
 }
-
-
-
-
-
-
-
-
-
-
 
 // import 'dart:io';
 // import 'package:camera/camera.dart';
@@ -1423,23 +1438,3 @@ class _PageThumbnail extends StatelessWidget {
 //     );
 //   }
 // }
-
-/// Mean per-corner distance between two quads in normalized units (0..1 image
-/// space). Used by [_CustomCameraScreenState._autoCrop] to decide whether the
-/// ONNX corners meaningfully disagree with the native ones before trusting
-/// either.
-double _cornerDistance(DocumentCorners a, DocumentCorners b) {
-  final pa = a.toList(), pb = b.toList();
-  var sum = 0.0;
-  for (var i = 0; i < 4; i++) {
-    sum += math.sqrt(
-      math.pow(pa[i].x - pb[i].x, 2) + math.pow(pa[i].y - pb[i].y, 2),
-    );
-  }
-  return sum / 4;
-}
-
-
-
-
-

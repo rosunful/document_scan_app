@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import '../controller/mock_data.dart';
@@ -35,9 +37,9 @@ class _HomeScreenState extends State<HomeScreen> {
         await _startAutoScan(context);
         break;
       case 'Scan Document':
-        Navigator.of(context).push(
-          MaterialPageRoute(builder: (_) => const TextExtractionScreen()),
-        );
+        Navigator.of(
+          context,
+        ).push(MaterialPageRoute(builder: (_) => const TextExtractionScreen()));
         break;
       case 'PDF to Image':
         await _openPdfToImage();
@@ -46,9 +48,9 @@ class _HomeScreenState extends State<HomeScreen> {
         await _openExcel();
         break;
       default:
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('$title tapped')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('$title tapped')));
     }
   }
 
@@ -71,12 +73,18 @@ class _HomeScreenState extends State<HomeScreen> {
       if (!mounted) return;
       if (pages.isEmpty) throw Exception('no pages');
       await Navigator.of(context).push(
-        MaterialPageRoute(builder: (_) => PdfToImageScreen(initialPages: pages)),
+        MaterialPageRoute(
+          builder: (_) => PdfToImageScreen(initialPages: pages),
+        ),
       );
     } catch (_) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Could not open this PDF. It may be corrupted or password-protected.')),
+        const SnackBar(
+          content: Text(
+            'Could not open this PDF. It may be corrupted or password-protected.',
+          ),
+        ),
       );
     } finally {
       if (mounted) {
@@ -103,7 +111,9 @@ class _HomeScreenState extends State<HomeScreen> {
       _loadingMessage = 'Opening Excel…';
     });
     try {
-      final workbook = await ExcelService.parse(ExcelParseRequest(filePath: path));
+      final workbook = await ExcelService.parse(
+        ExcelParseRequest(filePath: path),
+      );
       if (!mounted) return;
       if (workbook.sheets.isEmpty) throw Exception('no sheets');
       await Navigator.of(context).push(
@@ -117,7 +127,11 @@ class _HomeScreenState extends State<HomeScreen> {
     } catch (_) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Could not open this file. It may be corrupted or in an unsupported format.')),
+        const SnackBar(
+          content: Text(
+            'Could not open this file. It may be corrupted or in an unsupported format.',
+          ),
+        ),
       );
     } finally {
       if (mounted) {
@@ -129,20 +143,31 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  /// Camera opens first; the user can capture pages there, or tap the
-  /// gallery icon inside the preview screen if they'd rather pick existing
-  /// photos instead of shooting new ones.
+  /// Opens the PDF flow with the batch-cropped pages, then releases the raw
+  /// captures the preview didn't need — they live only in the app cache.
   Future<void> _startImageToPdf(BuildContext context) async {
-    final captured = await Navigator.of(context).push<List<String>>(
+    final captured = await Navigator.of(context).push<ScanPageSet>(
       MaterialPageRoute(builder: (_) => const CustomCameraScreen()),
     );
-    if (captured == null || captured.isEmpty || !context.mounted) return;
+    if (captured == null || captured.crops.isEmpty || !context.mounted) return;
 
     await Navigator.of(context).push(
       MaterialPageRoute(
-        builder: (_) => ImageToPdfPreviewScreen(imagePaths: captured),
+        builder: (_) => ImageToPdfPreviewScreen(imagePaths: captured.crops),
       ),
     );
+    for (final path in captured.origins) {
+      _deleteQuietly(path);
+    }
+  }
+
+  void _deleteQuietly(String path) {
+    try {
+      final file = File(path);
+      if (file.existsSync()) file.deleteSync();
+    } catch (_) {
+      // Best-effort cleanup.
+    }
   }
 
   /// Google ML Kit scanner: one full-screen flow that auto-detects, crops and
@@ -162,7 +187,9 @@ class _HomeScreenState extends State<HomeScreen> {
       if (!context.mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('Auto Scan isn\'t supported on this device — opening the camera instead.'),
+          content: Text(
+            'Auto Scan isn\'t supported on this device — opening the camera instead.',
+          ),
         ),
       );
       await _startImageToPdf(context);
@@ -229,6 +256,7 @@ class _HomeScreenState extends State<HomeScreen> {
                       .toList(),
                 ),
                 const SizedBox(height: 24),
+
                 // Row(
                 //   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 //   children: [
@@ -262,8 +290,6 @@ class _HomeScreenState extends State<HomeScreen> {
                 //     ),
                 //   ],
                 // ),
-               
-               
                 const SizedBox(height: 8),
               ],
             ),
@@ -278,7 +304,10 @@ class _HomeScreenState extends State<HomeScreen> {
                     const SizedBox(height: 12),
                     Text(
                       _loadingMessage,
-                      style: const TextStyle(color: Colors.white70, fontSize: 13),
+                      style: const TextStyle(
+                        color: Colors.white70,
+                        fontSize: 13,
+                      ),
                     ),
                   ],
                 ),

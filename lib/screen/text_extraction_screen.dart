@@ -38,11 +38,23 @@ class _TextExtractionScreenState extends State<TextExtractionScreen> {
   }
 
   Future<void> _useCamera() async {
-    final captured = await Navigator.of(context).push<List<String>>(
+    final captured = await Navigator.of(context).push<ScanPageSet>(
       MaterialPageRoute(builder: (_) => const CustomCameraScreen()),
     );
-    if (captured == null || captured.isEmpty || !mounted) return;
-    await _runOcr(captured);
+    if (captured == null || captured.crops.isEmpty || !mounted) return;
+    await _runOcr(captured.crops);
+    for (final path in captured.origins) {
+      _deleteQuietly(path);
+    }
+  }
+
+  void _deleteQuietly(String path) {
+    try {
+      final file = File(path);
+      if (file.existsSync()) file.deleteSync();
+    } catch (_) {
+      // Best-effort cleanup.
+    }
   }
 
   Future<void> _useGallery() async {
@@ -91,7 +103,8 @@ class _TextExtractionScreenState extends State<TextExtractionScreen> {
       if (!mounted) return;
       setState(() {
         _state = _State.error;
-        _errorMessage = 'Could not extract text. Try a clearer, well-lit photo.';
+        _errorMessage =
+            'Could not extract text. Try a clearer, well-lit photo.';
       });
     }
   }
@@ -99,9 +112,9 @@ class _TextExtractionScreenState extends State<TextExtractionScreen> {
   Future<void> _copyAll() async {
     await Clipboard.setData(ClipboardData(text: _textController.text));
     if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Copied to clipboard')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Copied to clipboard')));
     }
   }
 
@@ -171,7 +184,11 @@ class _TextExtractionScreenState extends State<TextExtractionScreen> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(Icons.text_snippet_outlined, size: 56, color: colors.descriptionColor),
+            Icon(
+              Icons.text_snippet_outlined,
+              size: 56,
+              color: colors.descriptionColor,
+            ),
             const SizedBox(height: 16),
             Text(
               'Capture or choose a photo to extract text from',
@@ -183,7 +200,10 @@ class _TextExtractionScreenState extends State<TextExtractionScreen> {
               style: ElevatedButton.styleFrom(
                 backgroundColor: colors.buttonColor,
                 foregroundColor: Colors.white,
-                padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 24,
+                  vertical: 14,
+                ),
                 minimumSize: const Size(220, 0),
               ),
               onPressed: _useCamera,
@@ -195,7 +215,10 @@ class _TextExtractionScreenState extends State<TextExtractionScreen> {
               style: OutlinedButton.styleFrom(
                 foregroundColor: colors.headingTextColor,
                 side: BorderSide(color: colors.borderColor),
-                padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 24,
+                  vertical: 14,
+                ),
                 minimumSize: const Size(220, 0),
               ),
               onPressed: _useGallery,
@@ -233,12 +256,23 @@ class _TextExtractionScreenState extends State<TextExtractionScreen> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(Icons.error_outline_rounded, size: 48, color: colors.descriptionColor),
+            Icon(
+              Icons.error_outline_rounded,
+              size: 48,
+              color: colors.descriptionColor,
+            ),
             const SizedBox(height: 16),
-            Text(_errorMessage, textAlign: TextAlign.center, style: TextStyle(color: colors.headingTextColor)),
+            Text(
+              _errorMessage,
+              textAlign: TextAlign.center,
+              style: TextStyle(color: colors.headingTextColor),
+            ),
             const SizedBox(height: 20),
             ElevatedButton(
-              style: ElevatedButton.styleFrom(backgroundColor: colors.buttonColor, foregroundColor: Colors.white),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: colors.buttonColor,
+                foregroundColor: Colors.white,
+              ),
               onPressed: _startOver,
               child: const Text('Try Again'),
             ),
@@ -266,7 +300,11 @@ class _TextExtractionScreenState extends State<TextExtractionScreen> {
                 maxLines: null,
                 expands: true,
                 textAlignVertical: TextAlignVertical.top,
-                style: TextStyle(fontSize: 14, color: colors.headingTextColor, height: 1.5),
+                style: TextStyle(
+                  fontSize: 14,
+                  color: colors.headingTextColor,
+                  height: 1.5,
+                ),
                 decoration: const InputDecoration(border: InputBorder.none),
               ),
             ),

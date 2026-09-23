@@ -10,33 +10,31 @@ import 'custom_bottom_nav.dart';
 class MyApp extends StatelessWidget {
   const MyApp({super.key});
 
-  static final _pages = [
-    const HomeScreen(),
-    const DocumentScreen()
-  ];
+  static final _pages = [const HomeScreen(), const DocumentScreen()];
 
   Future<void> _onScanTap(BuildContext context) async {
-    final pages = await Navigator.of(context).push<List<String>>(
+    final set = await Navigator.of(context).push<ScanPageSet>(
       MaterialPageRoute(builder: (_) => const CustomCameraScreen()),
     );
-    if (pages == null || pages.isEmpty || !context.mounted) return; 
+    if (set == null || set.crops.isEmpty || !context.mounted) return;
     Navigator.of(context).push(
-      MaterialPageRoute(builder: (_) => ScanPreviewScreen(imagePaths: pages)),
+      MaterialPageRoute(
+        builder: (_) => ScanPreviewScreen(
+          imagePaths: set.crops,
+          originalPaths: set.origins,
+        ),
+      ),
     );
   }
 
   @override
   Widget build(BuildContext context) {
-
     //THIS IS FOR THE PASSING THE INDEX FOR THE STACK
     final vm = context.watch<BottomNavProvider>();
     final colors = context.myAppColors;
 
     return Scaffold(
-      body:IndexedStack(
-        index: vm.selectedIndex,
-        children: _pages,
-      ) ,
+      body: IndexedStack(index: vm.selectedIndex, children: _pages),
       bottomNavigationBar: const CustomBottomNav(),
       floatingActionButton: Container(
         height: 60,
@@ -47,7 +45,7 @@ class MyApp extends StatelessWidget {
         ),
         child: IconButton(
           onPressed: () {
-           _onScanTap(context);
+            _onScanTap(context);
           },
           icon: Icon(
             Icons.camera_alt_rounded,
